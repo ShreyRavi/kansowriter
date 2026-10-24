@@ -18,6 +18,7 @@ export interface EditorOptions {
 }
 
 const readOnlyC = new Compartment();
+const historyC = new Compartment();
 const typewriterC = new Compartment();
 
 /** Typewriter scrolling: keep the caret line at 40% of the viewport height (page scroll). */
@@ -47,7 +48,7 @@ export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView 
   const state = EditorState.create({
     doc: o.doc,
     extensions: [
-      history(),
+      historyC.of(history()),
       keymap.of([...defaultKeymap, ...historyKeymap]),
       // plain CommonMark: markdown() would bundle the HTML/CSS/JS parsers for embedded code (R6: text only)
       commonmarkLanguage,
@@ -73,13 +74,20 @@ export function setTypewriter(view: EditorView, on: boolean): void {
   view.dispatch({ effects: typewriterC.reconfigure(typewriterExt(on)) });
 }
 
-/** Replace the whole document without recording it (loading a draft or a rebuilt writer). */
+/**
+ * Replace the whole document without recording it (loading a draft or a rebuilt writer).
+ * Undo history is reset: old events mapped through the full replace could otherwise
+ * reinsert stale pre-handover text, which the recorder would then save. Removing the
+ * history field drops its state; adding it back starts empty.
+ */
 export function loadText(view: EditorView, text: string): void {
   if (view.state.doc.toString() === text) return;
   view.dispatch({
     changes: { from: 0, to: view.state.doc.length, insert: text },
+    effects: historyC.reconfigure([]),
     annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)],
   });
+  view.dispatch({ effects: historyC.reconfigure(history()) });
 }
 
 export { setFocusMode };

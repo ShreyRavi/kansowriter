@@ -10,17 +10,23 @@ export type FocusMode = 'off' | 'paragraph' | 'sentence';
 const dimLine = Decoration.line({ class: 'cm-dim' });
 const dimMark = Decoration.mark({ class: 'cm-dim' });
 
-function paragraphAt(state: EditorState, pos: number): { from: number; to: number } {
+/**
+ * The paragraph (run of non-blank lines) around `pos`. The walk stops at line numbers
+ * `minLine`/`maxLine` (the viewport, where the decorations live) so a document without
+ * blank lines is not scanned end to end on every keystroke. A caret outside the bounds
+ * gets just its own line.
+ */
+function paragraphAt(state: EditorState, pos: number, minLine = 1, maxLine = state.doc.lines): { from: number; to: number } {
   const doc = state.doc;
   let first = doc.lineAt(pos);
   let last = first;
-  if (!first.text.trim()) return { from: first.from, to: first.to };
-  while (first.number > 1) {
+  if (!first.text.trim() || first.number < minLine || first.number > maxLine) return { from: first.from, to: first.to };
+  while (first.number > minLine) {
     const prev = doc.line(first.number - 1);
     if (!prev.text.trim()) break;
     first = prev;
   }
-  while (last.number < doc.lines) {
+  while (last.number < maxLine) {
     const next = doc.line(last.number + 1);
     if (!next.text.trim()) break;
     last = next;
@@ -43,7 +49,8 @@ function build(view: EditorView, mode: FocusMode): DecorationSet {
   if (mode === 'off') return builder.finish();
   const { state } = view;
   const head = state.selection.main.head;
-  const para = paragraphAt(state, head);
+  const { from: vFrom, to: vTo } = view.viewport;
+  const para = paragraphAt(state, head, state.doc.lineAt(vFrom).number, state.doc.lineAt(vTo).number);
   for (const { from, to } of view.visibleRanges) {
     for (let pos = from; pos <= to; ) {
       const line = state.doc.lineAt(pos);

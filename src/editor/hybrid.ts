@@ -9,10 +9,16 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
  * text, links are styled text (never anchors), and there is no math or diagram rendering.
  *
  *   "## Title"  caret elsewhere → "Title" (h2 line class)   caret on line → "## Title"
+ *
+ * A blank line between two non-blank lines (a paragraph separator) gets `cm-gap`, which
+ * styles.css shortens to the paragraph space. Not on a selected line, so typing on a blank
+ * line looks normal, and not on the last line of the document.
  */
 const hide = Decoration.replace({});
 const lineClass = (cls: string) => Decoration.line({ class: cls });
 const mark = (cls: string) => Decoration.mark({ class: cls });
+
+const gap = lineClass('cm-gap');
 
 const MARKS = new Set(['HeaderMark', 'EmphasisMark', 'CodeMark', 'LinkMark', 'QuoteMark']);
 
@@ -31,7 +37,14 @@ function build(view: EditorView): DecorationSet {
   const active = activeLines(state);
   const items: { from: number; to: number; deco: Decoration; line?: boolean }[] = [];
   const tree = syntaxTree(state);
+  const blank = (n: number) => !state.doc.line(n).text.trim();
   for (const { from, to } of view.visibleRanges) {
+    for (let n = state.doc.lineAt(from).number, end = state.doc.lineAt(to).number; n <= end; n++) {
+      if (n > 1 && n < state.doc.lines && !active.has(n) && blank(n) && !blank(n - 1) && !blank(n + 1)) {
+        const l = state.doc.line(n);
+        items.push({ from: l.from, to: l.from, deco: gap, line: true });
+      }
+    }
     tree.iterate({
       from,
       to,
