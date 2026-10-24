@@ -12,6 +12,7 @@ colors:
     accent: "#5E6E3A"
     accentHover: "#48562C"
     selection: "#5E6E3A38"
+    shadow: "rgba(39, 35, 32, 0.35)"
   night:
     ground: "#1B1917"
     surface: "#23201D"
@@ -23,11 +24,13 @@ colors:
     accent: "#B5BF86"
     accentHover: "#CBD4A2"
     selection: "#B5BF8647"
+    shadow: "rgba(0, 0, 0, 0.55)"
 type:
   writing: "'Newsreader', Georgia, 'Times New Roman', serif"
   sans: "'Instrument Sans', system-ui, sans-serif"
   mono: "'IBM Plex Mono', ui-monospace, monospace"
   ui: 13px
+  row: 14px
   uiSmall: 12px
   key: 11px
   body: 21px
@@ -69,7 +72,8 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 - The page acts like paper. Chrome fades 3 s after the first keystroke and returns on mouse move, tap, Esc or keyboard focus.
 - One accent, used only for the progress line, links and focus.
 - No cards, no decorative shadows. Overlays (sidebar, palette, send panel) get one soft offset shadow.
-- Minimum UI text 13px; key-hint chips 11px.
+- Minimum UI text 13px; palette rows and the search field 14px (`row`); key-hint chips 11px.
+- Overlay shadows use the theme's `shadow` color, so night overlays still lift off the ground.
 
 ## Components
 | Component | Spec |

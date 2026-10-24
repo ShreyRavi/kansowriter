@@ -1,4 +1,4 @@
-import { BACKUP_EXTENSION, BackupError, backupFileName, decodeBackup, encodeBackup } from '../core/backup';
+import { BACKUP_EXTENSION, BackupError, NOT_A_BACKUP, backupFileName, decodeBackup, encodeBackup } from '../core/backup';
 import type { ImportResult, StorageAdapter } from '../core/storage';
 import type { DraftWriter } from '../storage/writer';
 import { download, pickFile } from './platform';
@@ -27,12 +27,14 @@ export async function exportAll(storage: StorageAdapter, onExported: (at: number
 const drafts = (n: number) => `${n} draft${n === 1 ? '' : 's'}`;
 
 export function importLabel({ added, copies, skipped, damaged }: ImportResult): string {
+  if (!added && !skipped && !damaged) return 'That backup has no drafts';
   const parts: string[] = [];
   if (added - copies) parts.push(`Added ${drafts(added - copies)}`);
   if (copies) parts.push(`${parts.length ? 'added' : 'Added'} ${copies} changed draft${copies === 1 ? ' as a copy' : 's as copies'}`);
   if (skipped && parts.length) parts.push(`skipped ${skipped} already here`);
+  if (!added && skipped)
+    parts.push(`Nothing new: ${damaged ? `${skipped}` : `all ${drafts(skipped)}`} ${skipped === 1 ? 'is' : 'are'} already here`);
   if (damaged) parts.push(`${parts.length ? 'left out' : 'Left out'} ${drafts(damaged)} that couldn’t be read`);
-  if (!parts.length) return `Nothing new: all ${drafts(skipped)} ${skipped === 1 ? 'is' : 'are'} already here`;
   return parts.join(', ');
 }
 
@@ -44,7 +46,7 @@ export async function importBackup(storage: StorageAdapter): Promise<{ label: st
   try {
     data = await decodeBackup(new Uint8Array(await file.arrayBuffer()));
   } catch (e) {
-    return { label: e instanceof BackupError ? e.message : 'That file isn’t a Kansowriter backup', added: 0 };
+    return { label: e instanceof BackupError ? e.message : NOT_A_BACKUP, added: 0 };
   }
   try {
     const r = await storage.importAll(data);

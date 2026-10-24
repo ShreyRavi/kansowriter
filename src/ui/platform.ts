@@ -1,3 +1,5 @@
+import { TITLE_MAX } from '../core/draft';
+
 /** Safari (macOS or iOS) running as a normal tab, not an installed home-screen app (R10). */
 export function isSafariNotInstalled(): boolean {
   const ua = navigator.userAgent;
@@ -42,7 +44,7 @@ export function safeFileName(title: string): string {
     (title || 'Untitled')
       .replace(/[\\/:*?"<>|]+/g, '')
       .trim()
-      .slice(0, 80) || 'Untitled'
+      .slice(0, TITLE_MAX) || 'Untitled'
   );
 }
 

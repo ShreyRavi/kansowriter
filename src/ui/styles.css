@@ -383,6 +383,10 @@ main.boot p {
 .cm-editor .cm-line {
   padding: 0;
 }
+/* the blank line between paragraphs is the paragraph space, not a full line of text */
+.cm-editor .cm-line.cm-gap {
+  line-height: var(--space-paragraph);
+}
 .cm-editor .cm-cursor {
   border-left: 2px solid var(--c-ink);
 }
@@ -484,6 +488,8 @@ main.boot p {
   color: var(--c-ink);
   font-family: var(--type-sans);
   font-size: var(--type-ui);
+  flex-wrap: wrap;
+  row-gap: 4px;
   animation: notice-in 200ms ease-out;
 }
 @keyframes notice-in {
@@ -509,7 +515,7 @@ main.boot p {
   max-width: 100%;
   background: var(--c-surface);
   border-right: 1px solid var(--c-hairline);
-  box-shadow: 24px 0 60px -40px rgba(39, 35, 32, 0.35);
+  box-shadow: 24px 0 60px -40px var(--c-shadow);
   display: flex;
   flex-direction: column;
   font-family: var(--type-sans);
@@ -546,7 +552,7 @@ main.boot p {
   background: var(--c-ground);
   color: var(--c-ink);
   font: inherit;
-  font-size: 14px;
+  font-size: var(--type-row);
 }
 .sidebar .search .clear {
   position: absolute;
@@ -654,7 +660,7 @@ main.boot p {
   background: var(--c-surface);
   border: 1px solid var(--c-hairline);
   border-radius: var(--rounded-panel);
-  box-shadow: 0 30px 70px -30px rgba(39, 35, 32, 0.4);
+  box-shadow: 0 30px 70px -30px var(--c-shadow);
   display: flex;
   flex-direction: column;
   font-family: var(--type-sans);
@@ -727,7 +733,7 @@ main.boot p {
   padding: 0 12px;
   border-radius: var(--rounded-row);
   color: var(--c-ink);
-  font-size: 14px;
+  font-size: var(--type-row);
   cursor: pointer;
 }
 .palette [cmdk-item][data-selected='true'] {
@@ -776,8 +782,11 @@ main.boot p {
   border-radius: var(--rounded-row);
   padding: 0 8px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: var(--type-row);
   font-family: var(--type-sans);
+}
+.palette .choices button:hover {
+  background: var(--c-selected);
 }
 .palette .choices button[aria-pressed='true'] {
   color: var(--c-accent);
@@ -790,7 +799,7 @@ main.boot p {
   padding: 10px 12px;
   background: var(--c-selected);
   border-radius: var(--rounded-row);
-  font-size: 14px;
+  font-size: var(--type-row);
   color: var(--c-ink);
 }
 .palette .confirm .actions {
@@ -811,6 +820,17 @@ main.boot p {
   .cm-editor .cm-content {
     font-size: calc(var(--writing-size) - 2px);
     line-height: 1.65;
+  }
+  .cm-editor .cm-line.cm-gap {
+    line-height: var(--space-paragraph-phone);
+  }
+  /* iOS zooms the page into any field under 16px */
+  .sidebar .search input {
+    font-size: 16px;
+  }
+  .palette .val input {
+    font-size: 16px;
+    height: 36px;
   }
   /* the fixed header is ~52px plus the notch: the first line must start below it */
   .page {
@@ -861,8 +881,10 @@ main.boot p {
   .palette .close-btn .key {
     display: none;
   }
+  /* wraps instead of squeezing: the text on one line, its actions below, each a 44px target */
   .notice {
     padding: 0 16px;
+    column-gap: 8px;
   }
 }
 @media (prefers-reduced-motion: reduce) {

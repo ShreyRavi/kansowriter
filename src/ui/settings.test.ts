@@ -22,5 +22,9 @@ describe('importLabel', () => {
     );
     expect(importLabel({ added: 1, copies: 1, skipped: 0, damaged: 0 })).toBe('Added 1 changed draft as a copy');
     expect(importLabel({ added: 0, copies: 0, skipped: 0, damaged: 2 })).toBe('Left out 2 drafts that couldn’t be read');
+    expect(importLabel({ added: 0, copies: 0, skipped: 0, damaged: 0 })).toBe('That backup has no drafts');
+    expect(importLabel({ added: 0, copies: 0, skipped: 2, damaged: 1 })).toBe(
+      'Nothing new: 2 are already here, left out 1 draft that couldn’t be read',
+    );
   });
 });

@@ -2,27 +2,15 @@ import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, 
 import { Command } from 'cmdk';
 import { useStore } from './store';
 import { clamp, LIMITS, resolveTheme, TYPEFACES, type Settings, type ThemeChoice, type Typeface } from './settings';
-
-const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Light', night: 'Dark' };
 import { isMac } from './platform';
 import { SearchIcon } from './icons';
 import { useDialog } from './useDialog';
 import type { FocusMode } from '../editor/focus';
+import type { PaletteActions } from './paletteActions';
 
-export interface PaletteActions {
-  newDraft(): void;
-  openDrafts(): void;
-  rename(title: string): void;
-  exportMarkdown(): string;
-  exportText(): string;
-  exportAll(): Promise<string>;
-  importBackup(): Promise<string | null>;
-  clearHistory(): Promise<string>;
-  /** resolves to an error label when the draft could not be deleted */
-  deleteDraft(): Promise<string | null>;
-  resetToday(): Promise<void>;
-}
-
+const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Light', night: 'Dark' };
+type Expandable = 'theme' | 'typeface' | 'hide';
+const EXPANDABLE: readonly string[] = ['theme', 'typeface', 'hide'] satisfies Expandable[];
 const mod = () => (isMac() ? '⌘' : 'Ctrl ');
 type NumKey = 'textSize' | 'lineWidth' | 'goal';
 
@@ -48,7 +36,7 @@ export function CommandPalette({
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<NumKey | 'rename' | null>(null);
   const [draftValue, setDraftValue] = useState('');
-  const [expanded, setExpanded] = useState<'theme' | 'typeface' | 'hide' | null>(null);
+  const [expanded, setExpanded] = useState<Expandable | null>(null);
   const [confirm, setConfirm] = useState<'delete' | 'clear' | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -71,13 +59,21 @@ export function CommandPalette({
     void f().then((t) => flash(key, t));
   };
   const backToSearch = () => inputRef.current?.focus();
+  const closeChoices = () => {
+    setExpanded(null);
+    backToSearch();
+  };
+  const closeConfirm = () => {
+    setConfirm(null);
+    backToSearch();
+  };
 
   const startEdit = (key: NumKey | 'rename') => {
     setEditing(key);
     setDraftValue(key === 'rename' ? title : String(settings[key]));
   };
   const commitEdit = () => {
-    if (editing === 'rename') actions.rename(draftValue);
+    if (editing === 'rename') flash('rename', actions.rename(draftValue));
     else if (editing) {
       const n = Number(draftValue);
       if (Number.isFinite(n))
@@ -154,15 +150,10 @@ export function CommandPalette({
             if (e.key !== 'ArrowRight' || editing || expanded || confirm) return;
             const input = inputRef.current;
             if (input && document.activeElement === input && input.selectionStart !== input.value.length) return;
-            const v = (ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-value') ?? '').toLowerCase();
-            const rows: Record<string, 'theme' | 'typeface' | 'hide'> = {
-              theme: 'theme',
-              typeface: 'typeface',
-              'hide interface when typing': 'hide',
-            };
-            if (rows[v]) {
+            const row = ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-expand');
+            if (row && EXPANDABLE.includes(row)) {
               e.preventDefault();
-              setExpanded(rows[v]);
+              setExpanded(row as Expandable);
             }
           }}
         >
@@ -183,6 +174,7 @@ export function CommandPalette({
             <Command.Group heading="Appearance">
               <Command.Item
                 value="Theme"
+                data-expand="theme"
                 keywords={['dark', 'light', 'night', 'paper', 'mode', 'system']}
                 onSelect={() => update({ theme: themeCycle[(themeCycle.indexOf(settings.theme) + 1) % themeCycle.length]! })}
               >
@@ -195,13 +187,9 @@ export function CommandPalette({
                   current={settings.theme}
                   onPick={(t) => {
                     update({ theme: t as ThemeChoice });
-                    setExpanded(null);
-                    backToSearch();
+                    closeChoices();
                   }}
-                  onClose={() => {
-                    setExpanded(null);
-                    backToSearch();
-                  }}
+                  onClose={closeChoices}
                 />
               )}
               <Command.Item value="Text size" onSelect={() => startEdit('textSize')}>
@@ -214,6 +202,7 @@ export function CommandPalette({
               </Command.Item>
               <Command.Item
                 value="Typeface"
+                data-expand="typeface"
                 onSelect={() => update({ typeface: faces[(faces.indexOf(settings.typeface) + 1) % faces.length]! })}
               >
                 <span>Typeface</span>
@@ -225,13 +214,9 @@ export function CommandPalette({
                   current={settings.typeface}
                   onPick={(f) => {
                     update({ typeface: f as Typeface });
-                    setExpanded(null);
-                    backToSearch();
+                    closeChoices();
                   }}
-                  onClose={() => {
-                    setExpanded(null);
-                    backToSearch();
-                  }}
+                  onClose={closeChoices}
                 />
               )}
             </Command.Group>
@@ -257,6 +242,7 @@ export function CommandPalette({
               />
               <Command.Item
                 value="Hide interface when typing"
+                data-expand="hide"
                 onSelect={() => update({ hideChrome: hideCycle[(hideCycle.indexOf(settings.hideChrome) + 1) % hideCycle.length]! })}
               >
                 <span>Hide interface when typing</span>
@@ -268,13 +254,9 @@ export function CommandPalette({
                   current={String(settings.hideChrome)}
                   onPick={(id) => {
                     update({ hideChrome: id === 'never' ? 'never' : (Number(id) as 3 | 10) });
-                    setExpanded(null);
-                    backToSearch();
+                    closeChoices();
                   }}
-                  onClose={() => {
-                    setExpanded(null);
-                    backToSearch();
-                  }}
+                  onClose={closeChoices}
                 />
               )}
             </Command.Group>
@@ -318,20 +300,20 @@ export function CommandPalette({
                     />
                   </span>
                 ) : (
-                  <Val value="" />
+                  <Val value={labels.rename || ''} />
                 )}
               </Command.Item>
               <Item
                 label="Export as Markdown"
                 value={labels.md || '.md'}
                 kbd={`${mod()}E`}
-                onSelect={() => flash('md', actions.exportMarkdown())}
+                onSelect={() => run('md', 'Saving…', actions.exportMarkdown)}
               />
               <Item
                 label="Export as plain text"
                 value={labels.txt || '.txt'}
                 kbd={`${mod()}⇧E`}
-                onSelect={() => flash('txt', actions.exportText())}
+                onSelect={() => run('txt', 'Saving…', actions.exportText)}
               />
               <Item label="Export all drafts" value={labels.all || ''} onSelect={() => run('all', 'Saving…', actions.exportAll)} />
               <Item label="Import backup" value={labels.imp || ''} onSelect={() => run('imp', 'Reading…', actions.importBackup)} />
@@ -339,13 +321,9 @@ export function CommandPalette({
                 <Confirm
                   text={`Clear history of “${title || 'Untitled'}”? The text stays.`}
                   action="Clear"
-                  onCancel={() => {
-                    setConfirm(null);
-                    backToSearch();
-                  }}
+                  onCancel={closeConfirm}
                   onConfirm={() => {
-                    setConfirm(null);
-                    backToSearch();
+                    closeConfirm();
                     run('clear', 'Clearing…', actions.clearHistory);
                   }}
                 />
@@ -361,13 +339,9 @@ export function CommandPalette({
                       {labels.all || 'Export first'}
                     </button>
                   }
-                  onCancel={() => {
-                    setConfirm(null);
-                    backToSearch();
-                  }}
+                  onCancel={closeConfirm}
                   onConfirm={() => {
-                    setConfirm(null);
-                    backToSearch();
+                    closeConfirm();
                     run('delete', 'Deleting…', actions.deleteDraft);
                   }}
                 />

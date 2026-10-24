@@ -90,11 +90,17 @@ describe('importBackup', () => {
     );
   });
 
-  it('a storage failure during import still answers with a label instead of throwing', async () => {
+  // Regression: a valid backup that fails to store was reported as "That file isn’t a Kansowriter backup"
+  // Found by the /ship coverage audit on 2026-10-24
+  // Value: protects=a storage failure while restoring a valid backup says the device's storage failed, not that the file is wrong;
+  //   fails_when=importAll errors fall back into the not-a-backup label again; seam=none;
+  //   no_claim=a real quota error (importAll rejects in a fake)
+  it('a storage failure during import blames storage, not the file, instead of throwing', async () => {
     platform.pickFile.mockResolvedValue(file(await encodeBackup(data)));
-    const importAll = vi.fn(async () => Promise.reject(new Error('QuotaExceededError')));
-    const r = await importBackup(storageWith({ importAll }));
-    expect(r?.added).toBe(0);
-    expect(r?.label).toEqual(expect.any(String));
+    const importAll = vi.fn(async () => Promise.reject(new DOMException('full', 'QuotaExceededError')));
+    expect(await importBackup(storageWith({ importAll }))).toEqual({
+      label: 'Couldn’t restore: this device’s storage is full or unavailable',
+      added: 0,
+    });
   });
 });

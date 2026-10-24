@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { THEME_COLOR } from './src/ui/theme-colors';
 
 export default defineConfig({
   plugins: [
@@ -8,8 +9,9 @@ export default defineConfig({
     VitePWA({
       // R11: a new service worker waits until no Kansowriter tab is open; it never reloads an open page.
       registerType: 'prompt',
-      // OV10: register from a same-origin script file, never an inline script (strict CSP).
-      injectRegister: 'script',
+      // OV10: the app registers the worker itself (src/ui/updates.ts, bundled), never an inline
+      // script (strict CSP); it offers a quiet "Update ready · Reload" and reloads only on that click.
+      injectRegister: false,
       workbox: {
         skipWaiting: false,
         clientsClaim: false,
@@ -22,8 +24,8 @@ export default defineConfig({
         description: 'A quiet place to write.',
         start_url: '/',
         display: 'standalone',
-        background_color: '#F5F0E6',
-        theme_color: '#F5F0E6',
+        background_color: THEME_COLOR.paper,
+        theme_color: THEME_COLOR.paper,
         icons: [
           { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },

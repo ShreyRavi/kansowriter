@@ -1,17 +1,26 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { EditorView } from '@codemirror/view';
 import { createEditor, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
-import { attachDraftSession, type SessionHandle } from '../storage/lifecycle';
+import { attachDraftSession, channel, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
 import { DamagedDraftError, openDraftWriter, type DraftWriter } from '../storage/writer';
-import { deriveMeta, renameChange } from '../core/draft';
+import { deriveMeta, renameChange, type DraftRecord } from '../core/draft';
 import { dayKey } from '../core/words';
+import type { LoadedDraft } from '../core/storage';
 import { useStore } from './store';
 import { TYPEFACES, resolveTheme } from './settings';
-import { CommandPalette, type PaletteActions } from './CommandPalette';
+import type { PaletteActions } from './paletteActions';
 import { LibrarySidebar } from './LibrarySidebar';
-import { download, isMac, safeFileName } from './platform';
+import { download, isMac, requestPersistence, safeFileName } from './platform';
 import { exportAll, importBackup } from './backupActions';
+import { applyUpdate, useUpdateReady } from './updates';
 import { FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
+
+// the palette is its own chunk: it isn't needed to start writing (fetched at idle, see below)
+const loadPalette = () => import('./CommandPalette');
+const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
+
+/** Resolves true when it left; false when unsaved words kept the editor open (the notice then holds `go`). */
+export type LeaveGuard = (go: () => void) => Promise<boolean>;
 
 type NoticeState =
   | { kind: 'stale'; text: string }
@@ -27,11 +36,14 @@ interface Props {
   onOpen(id: string): void;
   onNew(title?: string): void;
   onDeleted(): void;
+  /** register the unsaved-words guard so browser Back/Forward goes through it too */
+  onGuard?(guard: LeaveGuard | null): void;
 }
 
-export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
+export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Props) {
   const store = useStore();
-  const { storage, settings, update, today, refreshToday, refreshDrafts, broadcast } = store;
+  const { storage, settings, update, today, refreshToday, refreshDrafts, upsertDraft, broadcast } = store;
+  const updateReady = useUpdateReady();
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const writerRef = useRef<DraftWriter | null>(null);
@@ -46,7 +58,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** this tab stopped saving and the editor holds words storage doesn't: every guard checks it */
   const staleRef = useRef(false);
-  const leaveRef = useRef<(go: () => void) => Promise<void>>(async (go) => go());
+  /** another tab holds the draft: this view only follows what it commits */
+  const readOnlyRef = useRef(false);
+  const leaveRef = useRef<LeaveGuard>(async (go) => (go(), true));
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -54,14 +68,15 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   useEffect(() => {
     let disposed = false;
     staleRef.current = false;
+    readOnlyRef.current = false;
     const host = hostRef.current!;
     let commitTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastCommit: DraftRecord | null = null;
 
     void (async () => {
       const loaded = await storage.loadDraft(draftId).catch(() => undefined);
       if (disposed) return;
       if (loaded === undefined) return setNotice({ kind: 'open-error' });
-      if (disposed) return;
       if (!loaded) return onDeleted();
       setTitle(loaded.record.meta.title);
       const view = createEditor(host, {
@@ -82,16 +97,18 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           setChromeVisible(true);
           setNotice({ kind: 'stale', text });
         },
-        onCommit: (rec: { meta: { title: string } }) => {
+        onCommit: (rec: DraftRecord) => {
           setTitle(rec.meta.title);
           // a later save caught up: the "not saved" warning no longer applies
           if (!staleRef.current && !writerRef.current?.dirty) setNotice((n) => (n?.kind === 'unsaved-leave' ? null : n));
           broadcast({ type: 'committed', draftId });
+          lastCommit = rec;
           if (commitTimer) return;
           commitTimer = setTimeout(() => {
             commitTimer = null;
             void refreshToday();
-            void refreshDrafts();
+            // just this draft's row: a full listDrafts every commit re-rendered every store reader
+            if (lastCommit) upsertDraft(lastCommit);
           }, 250);
         },
         onError: (e: unknown | null) =>
@@ -101,9 +118,15 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           }),
       };
 
+      // the first open reuses the draft just loaded (one replay); a later takeover reads it fresh
+      let firstLoad: LoadedDraft | undefined = loaded;
       sessionRef.current = attachDraftSession(
         draftId,
-        () => openDraftWriter(storage, draftId, events),
+        () => {
+          const preloaded = firstLoad;
+          firstLoad = undefined;
+          return openDraftWriter(storage, draftId, events, undefined, preloaded);
+        },
         {
           onWritable: (w) => {
             loadText(view, w.currentText);
@@ -115,12 +138,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
               return;
             }
             writerRef.current = w;
+            readOnlyRef.current = false;
             setReadOnly(view, false);
             setNotice((n) => (n?.kind === 'readonly' ? null : n));
             view.focus();
           },
           onReadOnly: (reason, error) => {
             writerRef.current = null;
+            readOnlyRef.current = reason !== 'error';
             setReadOnly(view, true);
             setChromeVisible(true);
             if (reason === 'error') {
@@ -152,6 +177,41 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftId, mountKey]);
+
+  // ---------- another tab writes this draft ----------
+  useEffect(() => {
+    const bc = channel();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // only a read-only tab follows (this tab's own commits arrive here too, via the store's channel);
+    // a stale view holds words storage doesn't, so it is never replaced
+    const following = () => readOnlyRef.current && !writerRef.current && !staleRef.current;
+    const follow = async () => {
+      timer = null;
+      const loaded = await storage.loadDraft(draftId).catch(() => undefined);
+      const view = viewRef.current;
+      if (!following() || loaded === undefined || !view) return;
+      if (loaded === null) return onDeleted(); // deleted in the tab that held it
+      // what this tab shows (and Copy keeps) isn't left behind the writing tab
+      loadText(view, loaded.text);
+      setTitle(loaded.record.meta.title);
+    };
+    const onMsg = (e: MessageEvent<ChannelMessage>) => {
+      if (e.data?.type !== 'committed' || e.data.draftId !== draftId || timer || !following()) return;
+      timer = setTimeout(() => void follow(), 300); // the writing tab commits every ~500 ms: coalesce
+    };
+    bc?.addEventListener('message', onMsg);
+    return () => {
+      if (timer) clearTimeout(timer);
+      bc?.removeEventListener('message', onMsg);
+      bc?.close();
+    };
+  }, [storage, draftId, onDeleted]);
+
+  // the palette chunk loads at idle, so ⌘K opens at once (and still works after a deploy replaced it)
+  useEffect(() => {
+    const t = setTimeout(() => void loadPalette().catch(() => {}), 1500);
+    return () => clearTimeout(t);
+  }, []);
 
   // ---------- settings → editor ----------
   useEffect(() => {
@@ -190,11 +250,18 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
 
   // ---------- actions ----------
   const currentText = () => viewRef.current?.state.doc.toString() ?? '';
-  const exportText = useCallback((ext: 'md' | 'txt') => {
-    const text = currentText();
-    download(`${safeFileName(deriveMeta(text, 0).title)}.${ext}`, text, ext === 'md' ? 'text/markdown' : 'text/plain');
-    return `Saved ${safeFileName(deriveMeta(text, 0).title)}.${ext}`;
-  }, []);
+  const exportText = useCallback(
+    async (ext: 'md' | 'txt') => {
+      // the writing tab's view is the newest text, and so is a stale tab's (storage lacks its words);
+      // a read-only tab exports what is saved, never the view it may still be catching up
+      const saved = writerRef.current || staleRef.current ? null : await storage.loadDraft(draftId).catch(() => null);
+      const text = saved?.text ?? currentText();
+      const name = `${safeFileName(deriveMeta(text, 0).title)}.${ext}`;
+      download(name, text, ext === 'md' ? 'text/markdown' : 'text/plain');
+      return `Saved ${name}`;
+    },
+    [storage, draftId],
+  );
 
   const toggleTheme = useCallback(() => {
     update({ theme: resolveTheme(settingsRef.current.theme) === 'night' ? 'paper' : 'night' });
@@ -212,15 +279,20 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       },
       rename: (t: string) => {
         const view = viewRef.current;
-        if (!view || !writerRef.current) return;
+        if (!view || !writerRef.current) return 'Open this draft here first to rename it';
         view.dispatch({ changes: renameChange(view.state.doc.toString(), t), userEvent: 'input' });
+        return null;
       },
       exportMarkdown: () => exportText('md'),
       exportText: () => exportText('txt'),
       exportAll: () => exportAll(storage, (at) => update({ lastExportedAt: at }), writerRef.current),
       importBackup: async () => {
         const r = await importBackup(storage);
-        if (r?.added) void refreshDrafts();
+        if (r?.added) {
+          void refreshDrafts();
+          void requestPersistence();
+          broadcast({ type: 'committed', draftId }); // other tabs reread their draft lists
+        }
         return r?.label ?? null;
       },
       clearHistory: async () => {
@@ -235,6 +307,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         setReadOnly(view, true);
         sessionRef.current = null;
         writerRef.current = null;
+        readOnlyRef.current = false; // never follow (or "find deleted") our own delete
         try {
           await s.dispose();
           await storage.deleteDraft(draftId);
@@ -242,6 +315,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           setMountKey((k) => k + 1); // reopen and keep writing; nothing was lost
           return 'Couldn’t delete. Try again';
         }
+        broadcast({ type: 'committed', draftId }); // a tab showing it read-only finds it gone and moves on
         setPalette(false);
         onDeleted();
         return null;
@@ -259,7 +333,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   // ---------- leaving with unsaved text ----------
   /** Try to save before switching drafts; if it can't, stay and offer the copy escape. */
   const pendingLeave = useRef<(() => void) | null>(null);
-  const leave = useCallback(async (go: () => void) => {
+  const leave: LeaveGuard = useCallback(async (go: () => void) => {
     const w = writerRef.current;
     if (w?.dirty) await w.flush(true);
     if (w?.dirty || staleRef.current) {
@@ -267,11 +341,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       pendingLeave.current = go;
       setChromeVisible(true);
       setNotice({ kind: 'unsaved-leave' });
-      return;
+      return false;
     }
     go();
+    return true;
   }, []);
   leaveRef.current = leave;
+  useEffect(() => {
+    onGuard?.((go) => leaveRef.current(go));
+    return () => onGuard?.(null);
+  }, [onGuard]);
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (writerRef.current?.dirty || staleRef.current) {
@@ -318,7 +397,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         toggleTheme();
       } else if (mod && k === 'e') {
         e.preventDefault();
-        exportText(e.shiftKey ? 'txt' : 'md');
+        void exportText(e.shiftKey ? 'txt' : 'md');
       } else if (mod && e.shiftKey && k === 't') {
         e.preventDefault();
         update({ typewriter: !settingsRef.current.typewriter });
@@ -409,6 +488,15 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         {settings.showProgress && (
           <div className="progress" aria-hidden="true">
             <div style={{ width: `${pct}%` }} />
+          </div>
+        )}
+        {!notice && updateReady && !staleRef.current && !writerRef.current?.dirty && (
+          // lowest priority (R11): a new version waits; only this click reloads, and only with nothing unsaved
+          <div className="notice" role="status">
+            <span>Update ready</span>
+            <button type="button" className="text-btn" onClick={() => void leave(applyUpdate)}>
+              Reload
+            </button>
           </div>
         )}
         {notice && (
@@ -519,7 +607,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           onExportAll={actions.exportAll}
         />
       )}
-      {palette && <CommandPalette onClose={closeOverlay} actions={actions} title={title} wordsToday={today} />}
+      {palette && (
+        <Suspense fallback={null}>
+          <CommandPalette onClose={closeOverlay} actions={actions} title={title} wordsToday={today} />
+        </Suspense>
+      )}
     </div>
   );
 }

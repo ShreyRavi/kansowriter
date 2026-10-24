@@ -1,4 +1,6 @@
-// Generates src/ui/tokens.css from DESIGN.md front matter (15A). `--check` fails if the file is stale.
+// Generates src/ui/tokens.css and src/ui/theme-colors.ts from DESIGN.md front matter (15A).
+// `--check` fails if either file is stale, or if index.html's theme-color meta isn't the paper ground
+// (index.html keeps a literal: the page is hash-pinned by its CSP, so it isn't generated).
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { parse } from 'yaml';
 
@@ -39,14 +41,34 @@ ${night.join('\n')}
 }
 `;
 
-const out = 'src/ui/tokens.css';
+const ground = (t: string) => (colors[t] as Tree).ground as string;
+const themeColors = `// Generated from DESIGN.md by scripts/gen-tokens.ts. Do not edit.
+/** Browser chrome and manifest color per theme: the paper / night ground. */
+export const THEME_COLOR = { paper: '${ground('paper')}', night: '${ground('night')}' } as const;
+`;
+
+const outputs: [string, string][] = [
+  ['src/ui/tokens.css', css],
+  ['src/ui/theme-colors.ts', themeColors],
+];
 if (process.argv.includes('--check')) {
-  if (!existsSync(out) || readFileSync(out, 'utf8') !== css) {
-    console.error('src/ui/tokens.css is stale. Run `npm run tokens`.');
-    process.exit(1);
+  let ok = true;
+  for (const [out, content] of outputs) {
+    if (!existsSync(out) || readFileSync(out, 'utf8') !== content) {
+      console.error(`${out} is stale. Run \`npm run tokens\`.`);
+      ok = false;
+    }
   }
-  console.log('tokens.css up to date');
+  const meta = readFileSync('index.html', 'utf8').match(/<meta name="theme-color" content="([^"]*)"/)?.[1];
+  if (meta !== ground('paper')) {
+    console.error(`index.html theme-color is ${meta ?? 'missing'}; set it to the paper ground ${ground('paper')}.`);
+    ok = false;
+  }
+  if (!ok) process.exit(1);
+  console.log('tokens.css, theme-colors.ts and index.html theme-color up to date');
 } else {
-  writeFileSync(out, css);
-  console.log('wrote', out);
+  for (const [out, content] of outputs) {
+    writeFileSync(out, content);
+    console.log('wrote', out);
+  }
 }

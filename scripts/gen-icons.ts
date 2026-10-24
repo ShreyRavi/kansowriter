@@ -10,9 +10,11 @@
 // icon-512.png, icon-maskable-512.png, apple-touch-icon.png (180). Run: npm run icons
 import { writeFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
+import { THEME_COLOR } from '../src/ui/theme-colors';
 
-const PAPER = { ground: '#F5F0E6', ink: '#272320', faint: '#CBBFAA', track: '#E0D6C4', accent: '#5E6E3A' };
-const NIGHT = { ground: '#1B1917', ink: '#E8E1D5', faint: '#4A443D', track: '#2E2A26', accent: '#B5BF86' };
+type Colors = { ground: string; ink: string; faint: string; track: string; accent: string };
+const PAPER: Colors = { ground: THEME_COLOR.paper, ink: '#272320', faint: '#CBBFAA', track: '#E0D6C4', accent: '#5E6E3A' };
+const NIGHT: Colors = { ground: THEME_COLOR.night, ink: '#E8E1D5', faint: '#4A443D', track: '#2E2A26', accent: '#B5BF86' };
 
 /** Marks on a 512 grid, scaled by `s` around the center (maskable/apple keep a safe zone). */
 function marks(s: number, writing = true, c = PAPER): string {

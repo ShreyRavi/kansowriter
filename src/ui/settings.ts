@@ -1,4 +1,5 @@
 import type { FocusMode } from '../editor/focus';
+import { THEME_COLOR } from './theme-colors';
 
 export type Typeface = 'newsreader' | 'instrument' | 'plex';
 export type ThemeChoice = 'system' | 'paper' | 'night';
@@ -87,9 +88,6 @@ export function storedThemeChoice(): ThemeChoice | null {
     return null;
   }
 }
-
-/** Browser chrome color per theme (matches --paper / --night ground in DESIGN.md). */
-const THEME_COLOR = { paper: '#F5F0E6', night: '#1B1917' } as const;
 
 export function applyTheme(choice: ThemeChoice): void {
   const resolved = resolveTheme(choice);

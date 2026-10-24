@@ -12,6 +12,8 @@ interface Store {
   update(patch: Partial<Settings>): void;
   drafts: DraftRecord[];
   refreshDrafts(): Promise<DraftRecord[]>;
+  /** put one committed draft in the list (newest first) without rereading the whole table */
+  upsertDraft(record: DraftRecord): void;
   today: number;
   refreshToday(): Promise<void>;
   /** tell other tabs something committed (days ledger, draft list) */
@@ -41,6 +43,14 @@ export function StoreProvider({
     const list = await storage.listDrafts();
     setDrafts(list);
     return list;
+  }, []);
+
+  const upsertDraft = useCallback((record: DraftRecord) => {
+    setDrafts((list) => {
+      const rest = list.filter((d) => d.id !== record.id);
+      const at = rest.findIndex((d) => d.updatedAt <= record.updatedAt);
+      return at < 0 ? [...rest, record] : [...rest.slice(0, at), record, ...rest.slice(at)];
+    });
   }, []);
 
   const refreshToday = useCallback(async () => {
@@ -130,8 +140,8 @@ export function StoreProvider({
   }, []);
 
   const value = useMemo(
-    () => ({ storage, settings, update, drafts, refreshDrafts, today, refreshToday, broadcast }),
-    [settings, update, drafts, refreshDrafts, today, refreshToday, broadcast],
+    () => ({ storage, settings, update, drafts, refreshDrafts, upsertDraft, today, refreshToday, broadcast }),
+    [settings, update, drafts, refreshDrafts, upsertDraft, today, refreshToday, broadcast],
   );
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

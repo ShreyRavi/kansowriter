@@ -22,14 +22,13 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
   const searchRef = useRef<HTMLInputElement>(null);
   useDialog(ref, onClose, searchRef);
 
-  // search covers title and body: load bodies lazily, only once someone searches
+  // search covers title and body: load bodies lazily (in parallel, kept lowercased), only once someone searches
   useEffect(() => {
     if (!q || bodies.size) return;
     let alive = true;
     void (async () => {
-      const m = new Map<string, string>();
-      for (const d of drafts) m.set(d.id, (await storage.loadDraft(d.id))?.text ?? '');
-      if (alive) setBodies(m);
+      const texts = await Promise.all(drafts.map(async (d) => ((await storage.loadDraft(d.id))?.text ?? '').toLowerCase()));
+      if (alive) setBodies(new Map(drafts.map((d, i) => [d.id, texts[i]!])));
     })();
     return () => {
       alive = false;
@@ -41,7 +40,7 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
     () =>
       needle
         ? drafts.filter(
-            (d) => d.meta.title.toLowerCase().includes(needle) || (bodies.get(d.id) ?? d.meta.excerpt).toLowerCase().includes(needle),
+            (d) => d.meta.title.toLowerCase().includes(needle) || (bodies.get(d.id) ?? d.meta.excerpt.toLowerCase()).includes(needle),
           )
         : drafts,
     [drafts, needle, bodies],
