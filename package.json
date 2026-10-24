@@ -16,7 +16,8 @@
     "csp:check": "tsx scripts/check-csp.ts",
     "icons": "tsx scripts/gen-icons.ts",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "measure:letters": "tsx scripts/measure-letters.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
