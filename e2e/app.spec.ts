@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { freshStart, mod, runCommand, settle, startWriting, write, openDrafts } from './helpers';
+import { failIdb, freshStart, mod, openDrafts, restoreIdb, runCommand, savedState, settle, startWriting, write } from './helpers';
 
 test.describe('first visit and writing', () => {
   test('landing shows the name, the line types itself, and no third-party requests happen', async ({ page, baseURL }) => {
@@ -46,13 +46,25 @@ test.describe('first visit and writing', () => {
   });
 
   test('hiding the page saves the word still being typed (R4)', async ({ page }) => {
+    // the 500 ms batch timer (setInterval 500, src/storage/lifecycle.ts) never fires on this page, so the
+    // only thing that can commit the open word before the reload is the visibilitychange flush
+    // (the reload's own pagehide flush would also save it: hence the check before reloading)
+    await page.addInitScript(() => {
+      const real = window.setInterval.bind(window);
+      window.setInterval = ((fn: TimerHandler, ms?: number, ...rest: unknown[]) =>
+        ms === 500 ? 0 : real(fn, ms, ...rest)) as typeof window.setInterval;
+    });
     const editor = await startWriting(page);
     await editor.pressSequentially('Hel');
+    await page.waitForTimeout(1600); // well past the merge window: without the timer nothing saves on its own
+    expect((await savedState(page)).saved.map((d) => d.text)).toEqual(['']);
     await page.evaluate(() => {
       Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
       document.dispatchEvent(new Event('visibilitychange'));
     });
-    await page.waitForTimeout(300);
+    await expect
+      .poll(async () => (await savedState(page)).saved.map((d) => ({ ops: d.ops > 0, text: d.text })))
+      .toEqual([{ ops: true, text: 'Hel' }]);
     await page.reload();
     await expect(page.getByRole('textbox', { name: 'Draft' })).toContainText('Hel');
   });
@@ -258,6 +270,42 @@ test.describe('document commands and failure paths', () => {
     await expect(page.getByRole('textbox', { name: 'Draft' })).toHaveAttribute('contenteditable', 'true');
     await expect(page.getByRole('textbox', { name: 'Draft' })).not.toContainText('first');
   });
+
+  test('when the database can’t open, the app says so and never shows an empty library', async ({ page }) => {
+    await page.addInitScript(() => {
+      IDBFactory.prototype.open = function () {
+        throw new DOMException('test: open refused', 'UnknownError');
+      };
+    });
+    await page.goto('/');
+    await expect(page.getByRole('alert')).toHaveText('Couldn’t open your saved drafts. They are still on this device.');
+    await expect(page.getByRole('button', { name: 'Try again' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Start writing' })).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Draft' })).toHaveCount(0);
+  });
+
+  test('a delete that fails keeps the draft open and writable', async ({ page }) => {
+    const editor = await startWriting(page);
+    await write(page, editor, 'not deleted');
+    await settle(page);
+    await failIdb(page, ['delete']);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await runCommand(page, 'delete draft', /Delete draft/);
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByRole('option', { name: /Delete draft/ })).toContainText('Couldn’t delete. Try again');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeHidden();
+    const draft = page.getByRole('textbox', { name: 'Draft' });
+    await expect(draft).toHaveAttribute('contenteditable', 'true');
+    await expect(draft).toContainText('not deleted');
+    await draft.click();
+    await page.keyboard.press('End');
+    await draft.pressSequentially(' and still writing');
+    await restoreIdb(page);
+    await settle(page);
+    await page.reload();
+    await expect(page.getByRole('textbox', { name: 'Draft' })).toHaveText('not deleted and still writing');
+  });
 });
 
 test.describe('phone layout', () => {
@@ -286,14 +334,12 @@ test.describe('accessibility (17A)', () => {
     expect((await new AxeBuilder({ page }).include('.sidebar').analyze()).violations).toEqual([]);
   });
 
-  test('Tab leaves the editor and reaches the drafts button first', async ({ page, browserName }) => {
+  test('Shift+Tab leaves the editor for the nearest header button', async ({ page, browserName, isMobile }) => {
     test.skip(browserName === 'webkit', 'Safari skips buttons on Tab unless "Press Tab to highlight each item" is enabled');
     const editor = await startWriting(page);
     await editor.pressSequentially('words');
     await page.keyboard.press('Shift+Tab');
-    await expect(page.locator(':focus')).toHaveAttribute(
-      'aria-label',
-      /Send|Open command palette|theme|focus mode|Open drafts|Open commands/,
-    );
+    // the header's last visible button (EditorShell): ⌘K/Ctrl K palette on desktop, "Open commands" (⋯) on phones
+    await expect(page.locator(':focus')).toHaveAttribute('aria-label', isMobile ? 'Open commands' : /^Open command palette (⌘K|Ctrl K)$/);
   });
 });
