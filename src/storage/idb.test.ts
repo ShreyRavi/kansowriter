@@ -98,7 +98,8 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     await w.flush(true, T0 + 5000);
     const key = dayKey(T0, 0);
     expect(wordsToday(await db.getDay(key))).toBe(2);
-    await db.clearHistory('d1', 'alpha beta', T0 + 6000);
+    const rec = (await db.loadDraft('d1'))!.record;
+    expect((await db.clearHistory('d1', 'alpha beta', T0 + 6000, rec.head, rec.epoch)).ok).toBe(true);
     expect((await db.loadDraft('d1'))!.text).toBe('alpha beta');
     expect(await db.loadOps('d1')).toHaveLength(0);
     expect(wordsToday(await db.getDay(key))).toBe(2);
@@ -127,6 +128,96 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect((await fresh.loadDraft('d1'))!.text).toBe('kept words');
     expect(await fresh.loadOps('d1')).toEqual(await db.loadOps('d1'));
     expect(await fresh.importAll(await decodeBackup(bytes))).toEqual({ added: 0, skipped: 1 });
+  });
+
+  it('an old writer cannot write after clear-history even when heads coincide (epoch, red team)', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'one', T0);
+    await w.flush(true, T0 + 400);
+    const loaded = (await db.loadDraft('d1'))!;
+    const staleEvents = { text: null as string | null };
+    const old = new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => (staleEvents.text = t), onCommit: () => {} }, () => 0);
+    // another tab clears history (head 1 → 0) and types one op (head 0 → 1): same head, new epoch
+    const cleared = await db.clearHistory('d1', 'one', T0 + 500, 1, loaded.record.epoch);
+    expect(cleared.ok).toBe(true);
+    const fresh = new DraftWriter(db, (cleared as { record: typeof loaded.record }).record, 'one', { onStale: () => {}, onCommit: () => {} }, () => 0);
+    fresh.push({ runs: [3, '!'], at: T0 + 600, kind: 'other' });
+    await fresh.flush(true, T0 + 600);
+    old.push({ runs: [3, '?'], at: T0 + 700, kind: 'other' });
+    await old.flush(true, T0 + 700);
+    expect(staleEvents.text).toBe('one?');
+    expect((await db.loadDraft('d1'))!.text).toBe('one!');
+  });
+
+  it('clear-history is rejected when the caller is behind (#9)', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'ab', T0);
+    await w.flush(true, T0 + 400);
+    const rec = (await db.loadDraft('d1'))!.record;
+    expect((await db.clearHistory('d1', 'ab', T0, rec.head - 1, rec.epoch)).ok).toBe(false);
+    expect(await db.loadOps('d1')).toHaveLength(1);
+  });
+
+  it('writes a snapshot at op 500 and loads through it (#11)', async () => {
+    const { w } = await makeWriter();
+    for (let i = 0; i < 502; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'x'] : ['x'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 10_000);
+    expect((await db.loadSnapshots('d1')).map((s) => s.opIndex)).toEqual([500]);
+    expect((await db.loadDraft('d1'))!.text).toBe('x'.repeat(502));
+    expect(replay(null, await db.loadOps('d1'))).toBe('x'.repeat(502));
+  });
+
+  it('a batch across local midnight updates two day rows (R20)', async () => {
+    const mid = Date.UTC(2026, 9, 24, 0, 0);
+    const { w } = await makeWriter();
+    typeWord(w, 'late', mid - 3000);
+    typeWord(w, ' early', mid + 1000);
+    await w.flush(true, mid + 5000);
+    expect(wordsToday(await db.getDay('2026-10-23'))).toBe(1);
+    expect(wordsToday(await db.getDay('2026-10-24'))).toBe(1);
+  });
+
+  it('reports the full text when the draft was deleted elsewhere (missing)', async () => {
+    const { w, events } = await makeWriter();
+    typeWord(w, 'ab', T0);
+    w.push({ runs: [2, ' c'], at: T0 + 300, kind: 'other' });
+    typeWord(w, 'd', T0 + 400);
+    await db.deleteDraft('d1');
+    await w.flush(true, T0 + 500);
+    expect(events.stale).toBe('ab cd');
+    expect(w.isStale).toBe(true);
+    w.push({ runs: [5, 'zzz'], at: T0 + 600, kind: 'other' });
+    expect(w.currentText).toBe('ab cd');
+  });
+
+  it('a corrupt op after the snapshot opens the draft as damaged instead of throwing', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'good', T0);
+    await w.flush(true, T0 + 500);
+    await db.db.ops.add({ draftId: 'd1', seq: 1, op: [0, 0, 99, 'x'] });
+    await db.db.drafts.update('d1', { head: 2 });
+    const loaded = (await db.loadDraft('d1'))!;
+    expect(loaded.damaged).toBe(true);
+    expect(loaded.text).toBe('good');
+  });
+
+  it('import into a non-empty database keeps existing days and rebuilds snapshots', async () => {
+    const { w } = await makeWriter();
+    for (let i = 0; i < 501; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'y'] : ['y'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 9000);
+    const data = await db.exportAll();
+    data.drafts[0]!.snapshots.push({ opIndex: 500, text: 'forged' }); // must not be trusted
+    const target = new IndexedDbAdapter(`test-${n++}`);
+    await target.db.days.put({ key: dayKey(T0, 0), B: 42, peak: 42, resetOffset: 0 });
+    await target.importAll(await decodeBackup(await encodeBackup(data)));
+    expect(wordsToday(await target.getDay(dayKey(T0, 0)))).toBe(42);
+    expect((await target.loadDraft('d1'))!.text).toBe('y'.repeat(501));
   });
 
   it('rejects files that are not backups', async () => {

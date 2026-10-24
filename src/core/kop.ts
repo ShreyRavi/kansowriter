@@ -16,17 +16,8 @@
 export type Run = number | string;
 export type Op = [dt: number, d: number, ...runs: Run[]];
 
-export const KOP_VERSION = 1;
-
 export function runsOf(op: Op): Run[] {
   return op.slice(2) as Run[];
-}
-
-/** Length of the document an op applies to (retain + delete). */
-export function baseLength(runs: Run[]): number {
-  let n = 0;
-  for (const r of runs) if (typeof r === 'number') n += Math.abs(r);
-  return n;
 }
 
 /** Length of the document after the op (retain + insert). */

@@ -64,6 +64,13 @@ describe('sessions (R16)', () => {
   });
 });
 
+describe('opTimes across sessions', () => {
+  it('restarts the clock at each session start', () => {
+    const sessions: Session[] = [{ opIndex: 0, at: 1000, tzOffset: 0 }, { opIndex: 1, at: 9000, tzOffset: 0 }];
+    expect(opTimes(sessions, [[0, 50, 'a'], [400, 0, 1, 'b']])).toEqual([1000, 9000]);
+  });
+});
+
 describe('meta', () => {
   it('derives title, excerpt and word count', () => {
     expect(deriveMeta('# On silence\n\nA few minutes into writing.')).toEqual({

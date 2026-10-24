@@ -25,7 +25,7 @@ export function wordDelta(before: string, after: string, op: Op): number {
   const last = runs[runs.length - 1];
   const trail = typeof last === 'number' && last > 0 && runs.length > 1 ? last : 0;
   if (lead === before.length && lead === after.length) return 0;
-  const start = before.lastIndexOf('\n', lead - 1) + 1;
+  const start = lead === 0 ? 0 : before.lastIndexOf('\n', lead - 1) + 1;
   const endBefore = lineEnd(before, before.length - trail);
   const endAfter = lineEnd(after, after.length - trail);
   return countWords(after.slice(start, endAfter)) - countWords(before.slice(start, endBefore));

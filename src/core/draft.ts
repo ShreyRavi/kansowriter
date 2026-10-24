@@ -28,6 +28,8 @@ export interface DraftRecord {
   sessions: Session[];
   /** number of ops in the log (next seq) */
   head: number;
+  /** random token, renewed by clear-history and import; appends must match it so a reused head can't pass (R5) */
+  epoch: string;
 }
 
 export interface Snapshot {
@@ -36,8 +38,12 @@ export interface Snapshot {
   text: string;
 }
 
+export function newEpoch(): string {
+  return globalThis.crypto.randomUUID();
+}
+
 export function newDraft(id: string, now: number): DraftRecord {
-  return { v: 1, id, createdAt: now, updatedAt: now, meta: { title: 'Untitled', excerpt: '', words: 0 }, sessions: [], head: 0 };
+  return { v: 1, id, createdAt: now, updatedAt: now, meta: { title: 'Untitled', excerpt: '', words: 0 }, sessions: [], head: 0, epoch: newEpoch() };
 }
 
 export function replay(snapshot: Snapshot | null, ops: Op[]): string {
@@ -52,12 +58,29 @@ const stripMd = (s: string) =>
     .replace(/[*_`~]+/g, '')
     .trim();
 
-export function deriveMeta(text: string): DraftMeta {
-  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-  const title = stripMd(lines[0] ?? '').slice(0, 80) || 'Untitled';
-  const body = lines.slice(1).map(stripMd).join(' ');
-  return { title, excerpt: body.slice(0, 160), words: countWords(text) };
+/**
+ * Title = first non-empty line, excerpt = following text up to 160 chars. Scans only as far as
+ * needed; pass `words` when the caller tracks the count incrementally.
+ */
+export function deriveMeta(text: string, words?: number): DraftMeta {
+  let title = '';
+  let excerpt = '';
+  let pos = 0;
+  while (pos <= text.length && excerpt.length < EXCERPT_MAX) {
+    const nl = text.indexOf('\n', pos);
+    const end = nl === -1 ? text.length : nl;
+    const line = stripMd(text.slice(pos, end));
+    if (line) {
+      if (!title) title = line.slice(0, 80);
+      else excerpt = excerpt ? `${excerpt} ${line}` : line;
+    }
+    if (nl === -1) break;
+    pos = nl + 1;
+  }
+  return { title: title || 'Untitled', excerpt: excerpt.slice(0, EXCERPT_MAX), words: words ?? countWords(text) };
 }
+
+const EXCERPT_MAX = 160;
 
 /**
  * R16: a session starts only when an op arrives after the draft was opened
@@ -68,18 +91,20 @@ export function needsNewSession(lastOpEnd: number | null, now: number, openedSin
   return now - lastOpEnd > SESSION_GAP_MS;
 }
 
-/** Absolute start time of each op, from its session's `at` plus cumulative dt and d. */
-export function opTimes(sessions: Session[], ops: Op[], firstIndex = 0): number[] {
+/**
+ * Absolute start time of each op in a full log (ops[0] is op index 0), from each session's
+ * `at` plus cumulative dt and d within the session.
+ */
+export function opTimes(sessions: Session[], ops: Op[]): number[] {
   const times: number[] = [];
   let si = -1;
   let clock = 0;
-  for (let k = 0; k < ops.length; k++) {
-    const idx = firstIndex + k;
-    while (si + 1 < sessions.length && sessions[si + 1]!.opIndex <= idx) {
+  for (let idx = 0; idx < ops.length; idx++) {
+    const op = ops[idx]!;
+    if (si + 1 < sessions.length && sessions[si + 1]!.opIndex === idx) {
       si++;
-      if (sessions[si]!.opIndex === idx) clock = sessions[si]!.at - ops[k]![0];
+      clock = sessions[si]!.at - op[0];
     }
-    const op = ops[k]!;
     clock += op[0];
     times.push(clock);
     clock += op[1];
