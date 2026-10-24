@@ -11,7 +11,15 @@ export async function freshStart(page: Page) {
     localStorage.clear();
     sessionStorage.clear();
     const dbs = (await indexedDB.databases?.()) ?? [{ name: 'kansowriter' }];
-    await Promise.all(dbs.map((d) => new Promise((r) => { const q = indexedDB.deleteDatabase(d.name!); q.onsuccess = q.onerror = q.onblocked = () => r(null); })));
+    await Promise.all(
+      dbs.map(
+        (d) =>
+          new Promise((r) => {
+            const q = indexedDB.deleteDatabase(d.name!);
+            q.onsuccess = q.onerror = q.onblocked = () => r(null);
+          }),
+      ),
+    );
   });
 }
 
@@ -53,4 +61,14 @@ export async function runCommand(page: Page, query: string, option: string | Reg
     await expect(page.locator('[cmdk-item][data-selected="true"]')).toHaveText(option);
     await page.keyboard.press('Enter');
   }
+}
+
+/** Open the drafts sidebar the way a person does: the header fades while typing, so reveal it first. */
+export async function openDrafts(page: Page) {
+  if (isMobile(page)) await page.touchscreen.tap(5, 400);
+  else {
+    await page.mouse.move(200, 300);
+    await page.mouse.move(240, 340);
+  }
+  await page.getByRole('button', { name: 'Open drafts' }).click();
 }

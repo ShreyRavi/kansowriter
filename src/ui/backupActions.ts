@@ -40,11 +40,17 @@ export function importLabel({ added, copies, skipped, damaged }: ImportResult): 
 export async function importBackup(storage: StorageAdapter): Promise<{ label: string; added: number } | null> {
   const file = await pickFile(`${BACKUP_EXTENSION},application/octet-stream`);
   if (!file) return null;
+  let data;
   try {
-    const data = await decodeBackup(new Uint8Array(await file.arrayBuffer()));
+    data = await decodeBackup(new Uint8Array(await file.arrayBuffer()));
+  } catch (e) {
+    return { label: e instanceof BackupError ? e.message : 'That file isn’t a Kansowriter backup', added: 0 };
+  }
+  try {
     const r = await storage.importAll(data);
     return { label: importLabel(r), added: r.added };
   } catch (e) {
-    return { label: e instanceof BackupError ? e.message : 'That file isn’t a Kansowriter backup', added: 0 };
+    // a valid backup that this device couldn't store (quota, IndexedDB error) is not "not a backup"
+    return { label: e instanceof BackupError ? e.message : 'Couldn’t restore: this device’s storage is full or unavailable', added: 0 };
   }
 }

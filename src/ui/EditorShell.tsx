@@ -253,27 +253,24 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         broadcast({ type: 'committed', draftId });
       },
     }),
-    [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast, toggleTheme],
+    [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
   );
 
   // ---------- leaving with unsaved text ----------
   /** Try to save before switching drafts; if it can't, stay and offer the copy escape. */
   const pendingLeave = useRef<(() => void) | null>(null);
-  const leave = useCallback(
-    async (go: () => void) => {
-      const w = writerRef.current;
-      if (w?.dirty) await w.flush(true);
-      if (w?.dirty || staleRef.current) {
-        // the editor still shows the words; Copy keeps them, Leave anyway goes (never a trap)
-        pendingLeave.current = go;
-        setChromeVisible(true);
-        setNotice({ kind: 'unsaved-leave' });
-        return;
-      }
-      go();
-    },
-    [],
-  );
+  const leave = useCallback(async (go: () => void) => {
+    const w = writerRef.current;
+    if (w?.dirty) await w.flush(true);
+    if (w?.dirty || staleRef.current) {
+      // the editor still shows the words; Copy keeps them, Leave anyway goes (never a trap)
+      pendingLeave.current = go;
+      setChromeVisible(true);
+      setNotice({ kind: 'unsaved-leave' });
+      return;
+    }
+    go();
+  }, []);
   leaveRef.current = leave;
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -377,10 +374,20 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           >
             <FocusIcon />
           </button>
-          <button type="button" className="icon-btn hide-phone" aria-label={night ? 'Switch to paper theme' : 'Switch to night theme'} onClick={toggleTheme}>
+          <button
+            type="button"
+            className="icon-btn hide-phone"
+            aria-label={night ? 'Switch to paper theme' : 'Switch to night theme'}
+            onClick={toggleTheme}
+          >
             {night ? <SunIcon /> : <MoonIcon />}
           </button>
-          <button type="button" className="icon-btn palette-btn hide-phone" aria-label={`Open command palette ${isMac() ? '⌘K' : 'Ctrl K'}`} onClick={() => setPalette(true)}>
+          <button
+            type="button"
+            className="icon-btn palette-btn hide-phone"
+            aria-label={`Open command palette ${isMac() ? '⌘K' : 'Ctrl K'}`}
+            onClick={() => setPalette(true)}
+          >
             <SearchIcon />
             <span className="key">{isMac() ? '⌘K' : 'Ctrl K'}</span>
           </button>
@@ -464,7 +471,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
                   onClick={async () => {
                     try {
                       const loaded = await storage.loadDraft(draftId);
-                      const r = loaded && (await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch));
+                      const r =
+                        loaded && (await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch));
                       if (!r || !r.ok) return setNotice({ kind: 'open-error' });
                     } catch {
                       return setNotice({ kind: 'open-error' });

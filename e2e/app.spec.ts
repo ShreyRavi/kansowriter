@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { freshStart, mod, runCommand, settle, startWriting, write } from './helpers';
+import { freshStart, mod, runCommand, settle, startWriting, write, openDrafts } from './helpers';
 
 test.describe('first visit and writing', () => {
   test('landing shows the name, the line types itself, and no third-party requests happen', async ({ page, baseURL }) => {
@@ -21,7 +21,9 @@ test.describe('first visit and writing', () => {
 
   test('favicon, apple-touch icon and every manifest icon resolve as images', async ({ page, request }) => {
     await page.goto('/about');
-    const hrefs = await page.$$eval('link[rel~="icon"], link[rel="apple-touch-icon"]', (ls) => ls.map((l) => (l as HTMLLinkElement).getAttribute('href')!));
+    const hrefs = await page.$$eval('link[rel~="icon"], link[rel="apple-touch-icon"]', (ls) =>
+      ls.map((l) => (l as HTMLLinkElement).getAttribute('href')!),
+    );
     const manifest = await (await request.get(await page.$eval('link[rel="manifest"]', (l) => (l as HTMLLinkElement).href))).json();
     const all = [...hrefs, ...manifest.icons.map((i: { src: string }) => i.src)];
     expect(all).toEqual(expect.arrayContaining(['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png', '/icon-maskable-512.png']));
@@ -112,7 +114,7 @@ test.describe('palette, sidebar, tabs', () => {
     const editor = await startWriting(page);
     await write(page, editor, '# First draft\n\nSome text.');
     await settle(page);
-    await page.getByRole('button', { name: 'Open drafts' }).click();
+    await openDrafts(page);
     const sidebar = page.getByRole('dialog', { name: 'Drafts' });
     await expect(sidebar.getByText('First draft')).toBeVisible();
     await sidebar.getByPlaceholder('Search drafts').fill('zebra');
@@ -233,16 +235,23 @@ test.describe('document commands and failure paths', () => {
     await settle(page);
     // the draft disappears underneath this tab (deleted elsewhere): the next write is refused
     await page.evaluate(async () => {
-      const db = await new Promise<IDBDatabase>((r) => { const q = indexedDB.open('kansowriter'); q.onsuccess = () => r(q.result); });
-      await new Promise((r) => { const t = db.transaction('drafts', 'readwrite'); t.objectStore('drafts').clear(); t.oncomplete = r; });
+      const db = await new Promise<IDBDatabase>((r) => {
+        const q = indexedDB.open('kansowriter');
+        q.onsuccess = () => r(q.result);
+      });
+      await new Promise((r) => {
+        const t = db.transaction('drafts', 'readwrite');
+        t.objectStore('drafts').clear();
+        t.oncomplete = r;
+      });
       db.close();
     });
     await editor.pressSequentially(' second');
     await expect(page.getByText('This tab stopped saving.')).toBeVisible({ timeout: 5000 });
     await expect(editor).toHaveAttribute('contenteditable', 'false');
     await page.getByRole('button', { name: 'Copy unsaved text' }).click();
-    await expect(page.locator('.notice')).toContainText(/Copied|Selected/);    // switching drafts asks once, and Leave anyway really leaves (never a trap)
-    await page.getByRole('button', { name: 'Open drafts' }).click();
+    await expect(page.locator('.notice')).toContainText(/Copied|Selected/); // switching drafts asks once, and Leave anyway really leaves (never a trap)
+    await openDrafts(page);
     await page.getByRole('dialog', { name: 'Drafts' }).getByRole('button', { name: 'New draft' }).click();
     await expect(page.getByText('Your newest words aren’t saved.')).toBeVisible();
     await page.getByRole('button', { name: 'Leave anyway' }).click();
@@ -273,7 +282,7 @@ test.describe('accessibility (17A)', () => {
     await page.keyboard.press(`${await mod(page)}+k`);
     expect((await new AxeBuilder({ page }).include('.palette').analyze()).violations).toEqual([]);
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Open drafts' }).click();
+    await openDrafts(page);
     expect((await new AxeBuilder({ page }).include('.sidebar').analyze()).violations).toEqual([]);
   });
 
@@ -282,6 +291,9 @@ test.describe('accessibility (17A)', () => {
     const editor = await startWriting(page);
     await editor.pressSequentially('words');
     await page.keyboard.press('Shift+Tab');
-    await expect(page.locator(':focus')).toHaveAttribute('aria-label', /Send|Open command palette|theme|focus mode|Open drafts|Open commands/);
+    await expect(page.locator(':focus')).toHaveAttribute(
+      'aria-label',
+      /Send|Open command palette|theme|focus mode|Open drafts|Open commands/,
+    );
   });
 });
