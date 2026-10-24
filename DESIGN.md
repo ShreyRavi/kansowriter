@@ -66,7 +66,7 @@ motion:
 
 # Kansowriter design system
 
-The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/ui/tokens.css` is generated from the front matter above by `npm run tokens`; CI fails if it drifts (`npm run tokens:check`).
+The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/ui/tokens.css` and `src/ui/theme-colors.ts` are generated from the front matter above by `npm run tokens`; CI fails if either drifts (`npm run tokens:check`).
 
 ## Principles
 - The page acts like paper. Chrome fades 3 s after the first keystroke and returns on mouse move, tap, Esc or keyboard focus.
