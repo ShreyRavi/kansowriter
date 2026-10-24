@@ -203,6 +203,20 @@ main.boot p {
   animation: none;
   color: var(--c-ink);
 }
+/* the error screen's copy fallback: the unsaved words, selected for ⌘C / Ctrl C */
+main.boot .unsaved-text {
+  width: min(var(--space-measure), calc(100vw - 2 * var(--space-gutter)));
+  height: 40vh;
+  padding: 12px;
+  border: 1px solid var(--c-hairline);
+  border-radius: var(--rounded-panel);
+  background: var(--c-surface);
+  color: var(--c-ink);
+  font-family: var(--type-writing);
+  font-size: var(--type-row);
+  line-height: var(--type-line-serif);
+  resize: vertical;
+}
 @keyframes fade-in {
   to {
     opacity: 1;

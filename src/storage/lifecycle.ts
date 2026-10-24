@@ -209,6 +209,22 @@ export function attachDraftSession(
       handover = null;
     });
   };
+  /**
+   * A handover-request deferred by clearHistory whose clear ended without a writer: nothing to
+   * flush (the retired writer already handed its text back), so free the lock and say so, and the
+   * requester takes over now instead of stealing after STEAL_AFTER_MS.
+   */
+  const releaseRetired = () => {
+    release?.();
+    void held.then(() => {
+      if (disposed) return;
+      try {
+        bc?.postMessage({ type: 'released', draftId } satisfies ChannelMessage);
+      } catch {
+        // channel closed
+      }
+    });
+  };
   const onMessage = (e: MessageEvent<ChannelMessage>) => {
     const m = e.data;
     if (m.type !== 'handover-request' || m.draftId !== draftId || !writer) return;
@@ -309,6 +325,8 @@ export function attachDraftSession(
       // held until the rebuilt writer takes over (or the error path retired w): a flush of w after
       // clear() renewed the epoch would turn it stale, so typing meanwhile stays queued on w
       clearing = w;
+      // a steal (onLost) bumps the generation: once it moved, this tab no longer holds the lock
+      const gen = generation;
       try {
         if (!(await clear(w, now))) return false;
         if (w.isStale && writer === w && !disposed) {
@@ -342,7 +360,9 @@ export function attachDraftSession(
         clearing = null;
         if (deferredHandover) {
           deferredHandover = false;
-          if (!disposed) handOver();
+          if (writer && !disposed) handOver();
+          // a retire path (stale or failed rebuild) left no writer, but the lock is still ours
+          else if (release && !disposed && generation === gen) releaseRetired();
         }
       }
     },

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { EditorView } from '@codemirror/view';
 import { createEditor, followText, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
 import { attachDraftSession, channel, FOLLOW_COALESCE_MS, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
@@ -14,6 +14,7 @@ import { download, isMac, requestPersistence, safeFileName } from './platform';
 import { exportAll, importBackup } from './backupActions';
 import { applyUpdate, useUpdateReady } from './updates';
 import { FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
+import { setUnsavedProvider } from './unsaved';
 
 /** typing pause before the update notice may first appear while the chrome is faded */
 const UPDATE_IDLE_MS = 3000;
@@ -21,12 +22,32 @@ const UPDATE_IDLE_MS = 3000;
 // the palette is its own chunk: it isn't needed to start writing (fetched at idle, see below)
 const loadPalette = () => import('./CommandPalette');
 // one retry for a dropped request; a second failure (e.g. the chunk is gone after a deploy)
-// rejects into the ErrorBoundary's Reload screen
+// rejects into PaletteBoundary below, which closes the palette and keeps the editor open
 const CommandPalette = lazy(() =>
   loadPalette()
     .catch(() => loadPalette())
     .then((m) => ({ default: m.CommandPalette })),
 );
+
+/**
+ * Catches the palette failing (its chunk won't load, or it throws) so the error never reaches the
+ * root ErrorBoundary: that would unmount the editor, its unsaved-words guard and the session.
+ */
+class PaletteBoundary extends Component<{ children: ReactNode; onError(): void }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    this.props.onError();
+  }
+
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 /** Resolves true when it left; false when unsaved words kept the editor open (the notice then holds `go`). */
 export type LeaveGuard = (go: () => void) => Promise<boolean>;
@@ -67,6 +88,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const [mountKey, setMountKey] = useState(0);
   /** the update notice, latched: it first appears only while the writer isn't mid-sentence, then stays */
   const [showUpdate, setShowUpdate] = useState(false);
+  /** the palette couldn't open (its chunk is likely gone after a deploy): offer a reload */
+  const [paletteFailed, setPaletteFailed] = useState(false);
   const lastActivity = useRef(0);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** this tab stopped saving and the editor holds words storage doesn't: every guard checks it */
@@ -450,6 +473,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     onGuard?.((go) => leaveRef.current(go));
     return () => onGuard?.(null);
   }, [onGuard]);
+  // the root ErrorBoundary reads this before the editor unmounts, so it never claims these words are saved
+  useEffect(
+    () =>
+      setUnsavedProvider(() => {
+        if (staleTextRef.current !== null) return staleTextRef.current;
+        const dirty = writerRef.current?.dirty || staleRef.current;
+        return dirty ? (viewRef.current?.state.doc.toString() ?? null) : null;
+      }),
+    [],
+  );
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
       if (writerRef.current?.dirty || staleRef.current) {
@@ -624,6 +657,15 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             </button>
           </div>
         )}
+        {!notice && !(showUpdate && !staleRef.current) && paletteFailed && (
+          // lowest priority: below the update notice, whose Reload brings the new palette too
+          <div className="notice" role="status">
+            <span>Couldn’t open commands. Reload to update</span>
+            <button type="button" className="text-btn" onClick={() => void leave(() => location.reload())}>
+              Reload
+            </button>
+          </div>
+        )}
         {notice && (
           <div className="notice" role={notice.kind === 'stale' || notice.kind === 'readonly' ? 'alert' : 'status'}>
             {notice.kind === 'stale' && (
@@ -718,9 +760,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         />
       )}
       {palette && (
-        <Suspense fallback={null}>
-          <CommandPalette onClose={closeOverlay} actions={actions} title={title} wordsToday={today} />
-        </Suspense>
+        <PaletteBoundary
+          onError={() => {
+            closeOverlay();
+            setPaletteFailed(true);
+          }}
+        >
+          <Suspense fallback={null}>
+            <CommandPalette onClose={closeOverlay} actions={actions} title={title} wordsToday={today} />
+          </Suspense>
+        </PaletteBoundary>
       )}
     </div>
   );

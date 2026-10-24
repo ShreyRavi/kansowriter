@@ -509,14 +509,24 @@ describe('attachDraftSession state matrix', () => {
     expect(s.writer).toBeNull();
   });
 
-  /** a session whose rebuild (the second openWriter) waits on `gate` */
-  function openGatedRebuild(tag: string, log: string[]) {
+  /**
+   * a session whose rebuild (the second openWriter) waits on `gate`; `failRebuild` makes it throw once
+   * opened, `clear` replaces the storage clear (e.g. one gated itself, or one that refuses)
+   */
+  function openGatedRebuild(
+    tag: string,
+    log: string[],
+    opts: { failRebuild?: boolean; clear?: (w: DraftWriter, now: number) => Promise<boolean> } = {},
+  ) {
     let opens = 0;
     const gate: { open?: () => void } = {};
     const s = attachDraftSession(
       'd1',
       async () => {
-        if (++opens === 2) await new Promise<void>((r) => (gate.open = r));
+        if (++opens === 2) {
+          await new Promise<void>((r) => (gate.open = r));
+          if (opts.failRebuild) throw new Error('idb hiccup');
+        }
         const loaded = (await db.loadDraft('d1'))!;
         return new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => log.push(`${tag}:stale:${t}`), onCommit: () => {} });
       },
@@ -525,7 +535,7 @@ describe('attachDraftSession state matrix', () => {
         onReadOnly: (r) => log.push(`${tag}:readonly:${r}`),
         onHandedOver: () => log.push(`${tag}:handed-over-done`),
       },
-      clearInDb,
+      opts.clear ?? clearInDb,
     );
     sessions.push(s);
     return { s, gate };
@@ -574,6 +584,90 @@ describe('attachDraftSession state matrix', () => {
     expect(count(log, 'a:stale:')).toBe(0);
     expect(b.writer!.currentText).toBe('base more');
     expect(await db.loadOps('d1')).toHaveLength(1); // history cleared, then just the carried word
+  });
+
+  it('clearHistory: a handover deferred by a failed rebuild releases the lock at once, no steal wait', async () => {
+    const log: string[] = [];
+    const { s, gate } = openGatedRebuild('a', log, { failRebuild: true });
+    await until(() => s.writer !== null);
+    s.writer!.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof gate.open === 'function');
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    const started = Date.now();
+    const t = b.takeOver();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(log).not.toContain('a:readonly:handed-over'); // deferred while rebuilding
+    gate.open!();
+    expect(await p).toBe(true);
+    expect(log).toContain('a:readonly:error');
+    await t;
+    await until(() => b.writer !== null);
+    expect(Date.now() - started).toBeLessThan(STEAL_AFTER_MS); // gstack-timing-ok: released cooperatively, not stolen
+    expect(b.writer!.currentText).toBe('base');
+    expect(count(log, 'a:writable')).toBe(1);
+    expect(count(log, 'a:stale:')).toBe(0);
+  });
+
+  /** a clear that runs in storage, then waits on `gate.open` before answering `answer` */
+  const gatedClear = (gate: { open?: () => void }, answer?: boolean) => async (w: DraftWriter, now: number) => {
+    const ok = answer ?? (await clearInDb(w, now));
+    await new Promise<void>((r) => (gate.open = r));
+    return ok;
+  };
+
+  it('clearHistory: a handover deferred by a writer that went stale during the clear releases the lock at once', async () => {
+    const log: string[] = [];
+    const clearGate: { open?: () => void } = {};
+    const { s } = openGatedRebuild('a', log, { clear: gatedClear(clearGate) });
+    await until(() => s.writer !== null);
+    const w = s.writer!;
+    w.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof clearGate.open === 'function');
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    const started = Date.now();
+    const t = b.takeOver();
+    await new Promise((r) => setTimeout(r, 50));
+    w.push({ runs: [4, ' more'], at: Date.now(), kind: 'other' });
+    await w.flush(true); // e.g. export flushing the writer: hits the renewed epoch
+    expect(log).toContain('a:stale:base more');
+    clearGate.open!();
+    expect(await p).toBe(true);
+    expect(log).toContain('a:readonly:error');
+    await t;
+    await until(() => b.writer !== null);
+    expect(Date.now() - started).toBeLessThan(STEAL_AFTER_MS); // gstack-timing-ok: released cooperatively, not stolen
+    expect(b.writer!.currentText).toBe('base'); // what storage holds; ' more' was handed back to a
+    expect(count(log, 'a:writable')).toBe(1);
+    expect(count(log, 'a:stale:')).toBe(1);
+  });
+
+  it('clearHistory: a handover deferred by a refused clear hands over the kept writer', async () => {
+    const log: string[] = [];
+    const clearGate: { open?: () => void } = {};
+    const { s } = openGatedRebuild('a', log, { clear: gatedClear(clearGate, false) });
+    await until(() => s.writer !== null);
+    s.writer!.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof clearGate.open === 'function');
+    s.writer!.push({ runs: [4, ' more'], at: Date.now(), kind: 'type' }); // still pending
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    const t = b.takeOver();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(log).not.toContain('a:readonly:handed-over');
+    clearGate.open!();
+    expect(await p).toBe(false);
+    await t;
+    await until(() => b.writer !== null);
+    expect(log).toContain('a:readonly:handed-over');
+    expect(log).toContain('a:handed-over-done');
+    expect(b.writer!.currentText).toBe('base more');
+    expect(count(log, 'a:writable')).toBe(1);
+    expect(count(log, 'a:stale:')).toBe(0);
   });
 
   it('queued-closed × handover: flush(true) commits the queue and the new tab loads it', async () => {
