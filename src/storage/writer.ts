@@ -294,8 +294,16 @@ export class DraftWriter {
   }
 }
 
+/**
+ * `head` and `epoch` are the record the readable text was replayed from: a repair passes them to
+ * clearHistory, so a draft that changed since (another tab wrote or repaired it) is never overwritten.
+ */
 export class DamagedDraftError extends Error {
-  constructor(readonly text: string) {
+  constructor(
+    readonly text: string,
+    readonly head: number,
+    readonly epoch: string,
+  ) {
     super('Draft history is damaged');
   }
 }
@@ -319,6 +327,6 @@ export async function openDraftWriter(
   }
   loaded ??= await storage.loadDraft(id);
   if (!loaded) throw new Error(`Draft ${id} not found`);
-  if (loaded.damaged) throw new DamagedDraftError(loaded.text);
+  if (loaded.damaged) throw new DamagedDraftError(loaded.text, loaded.record.head, loaded.record.epoch);
   return new DraftWriter(storage, loaded.record, loaded.text, events, tzOffset);
 }

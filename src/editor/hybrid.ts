@@ -11,8 +11,9 @@ import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate
  *   "## Title"  caret elsewhere → "Title" (h2 line class)   caret on line → "## Title"
  *
  * A blank line between two non-blank lines (a paragraph separator) gets `cm-gap`, which
- * styles.css shortens to the paragraph space. Not on a selected line, so typing on a blank
- * line looks normal, and not on the last line of the document.
+ * styles.css shortens to the paragraph space. Not on a line holding an empty cursor, so typing
+ * on a blank line looks normal (a range selection, e.g. ⌘A or a drag, keeps it: selecting never
+ * reflows), and not on the last line of the document.
  */
 const hide = Decoration.replace({});
 const lineClass = (cls: string) => Decoration.line({ class: cls });
@@ -32,15 +33,23 @@ function activeLines(state: EditorState): Set<number> {
   return lines;
 }
 
+/** lines holding an empty cursor: the only blank lines that lose cm-gap */
+function cursorLines(state: EditorState): Set<number> {
+  const lines = new Set<number>();
+  for (const r of state.selection.ranges) if (r.empty) lines.add(state.doc.lineAt(r.head).number);
+  return lines;
+}
+
 function build(view: EditorView): DecorationSet {
   const { state } = view;
   const active = activeLines(state);
+  const cursors = cursorLines(state);
   const items: { from: number; to: number; deco: Decoration; line?: boolean }[] = [];
   const tree = syntaxTree(state);
   const blank = (n: number) => !state.doc.line(n).text.trim();
   for (const { from, to } of view.visibleRanges) {
     for (let n = state.doc.lineAt(from).number, end = state.doc.lineAt(to).number; n <= end; n++) {
-      if (n > 1 && n < state.doc.lines && !active.has(n) && blank(n) && !blank(n - 1) && !blank(n + 1)) {
+      if (n > 1 && n < state.doc.lines && !cursors.has(n) && blank(n) && !blank(n - 1) && !blank(n + 1)) {
         const l = state.doc.line(n);
         items.push({ from: l.from, to: l.from, deco: gap, line: true });
       }

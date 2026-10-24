@@ -1,4 +1,5 @@
 import { BATCH_MS, type DraftWriter } from './writer';
+import type { DraftRecord } from '../core/draft';
 
 export const STEAL_AFTER_MS = 2000;
 const CHANNEL = 'kansowriter';
@@ -6,7 +7,11 @@ const CHANNEL = 'kansowriter';
 export type ChannelMessage =
   | { type: 'handover-request'; draftId: string }
   | { type: 'released'; draftId: string }
-  | { type: 'committed'; draftId: string }
+  /** a batch committed; `record` is the draft's row after it, so other tabs upsert without a reread */
+  | { type: 'committed'; draftId: string; record: DraftRecord }
+  | { type: 'deleted'; draftId: string }
+  /** drafts or the days ledger changed outside a writer (import, reset today): reread the lists */
+  | { type: 'library' }
   | { type: 'settings' };
 
 /** sessions still releasing their lock, so re-opening the same draft waits instead of going read-only */
@@ -15,6 +20,9 @@ const disposing = new Map<string, Promise<void>>();
 export function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
 }
+
+/** receivers coalesce 'committed' bursts (a writing tab commits every BATCH_MS while typing) */
+export const FOLLOW_COALESCE_MS = 300;
 
 export interface SessionHandle {
   /** the writer, while this tab holds the single-writer lock; null when read-only */
@@ -31,6 +39,12 @@ export interface SessionHooks {
   onWritable(writer: DraftWriter): void;
   /** this tab is read-only: another tab holds the draft, or the lock was taken away */
   onReadOnly(reason: 'other-tab' | 'handed-over' | 'stolen' | 'error', error?: unknown): void;
+  /**
+   * after onReadOnly('handed-over'): the final flush committed everything this tab showed and
+   * the lock is released, so storage now holds the text. Never called when that flush failed
+   * (the writer's onStale hands the text back instead).
+   */
+  onHandedOver?(): void;
 }
 
 /**
@@ -76,6 +90,7 @@ export function attachDraftSession(
   };
   const writable = (w: DraftWriter) => safe(() => hooks.onWritable(w));
   const readOnly = (r: Parameters<SessionHooks['onReadOnly']>[0], e?: unknown) => safe(() => hooks.onReadOnly(r, e));
+  const handedOver = () => safe(() => hooks.onHandedOver?.());
 
   /** Lock callback: build the writer from storage, then hold until released. */
   const hold = async (lock: Lock | null, gen: number): Promise<void> => {
@@ -113,8 +128,10 @@ export function attachDraftSession(
     handingOver = null;
     handover = null; // a handover overtaken by a steal is moot; dispose must not wait on it
     if (w) {
+      const saved = !w.dirty;
       w.abandon();
       if (wasWritable) readOnly('stolen');
+      else if (saved) handedOver(); // the handover flush had already committed everything
     }
   };
 
@@ -174,7 +191,8 @@ export function attachDraftSession(
       await w.flush(true);
       if (handingOver !== w) return; // stolen mid-flush; onLost already handed back the text
       handingOver = null;
-      if (w.dirty) w.abandon(); // the final write failed: hand the text back instead of losing it
+      const saved = !w.dirty;
+      if (!saved) w.abandon(); // the final write failed: hand the text back instead of losing it
       release?.();
       // announce only once the lock manager has it back, or the requester's ifAvailable misses it
       await held;
@@ -184,6 +202,7 @@ export function attachDraftSession(
         } catch {
           // channel closed
         }
+        if (saved) handedOver();
       }
     })().finally(() => {
       handover = null;

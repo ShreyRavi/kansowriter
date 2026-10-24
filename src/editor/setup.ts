@@ -21,11 +21,15 @@ const readOnlyC = new Compartment();
 const historyC = new Compartment();
 const typewriterC = new Compartment();
 
-/** Typewriter scrolling: keep the caret line at 40% of the viewport height (page scroll). */
+/**
+ * Typewriter scrolling: keep the caret line at 40% of the viewport height (page scroll).
+ * Loads and follower updates (notRecorded) never scroll: a reader's place stays put.
+ */
 function typewriterExt(on: boolean): Extension {
   if (!on) return [];
   return EditorView.updateListener.of((u) => {
     if (!u.selectionSet && !u.docChanged) return;
+    if (u.transactions.some((tr) => tr.annotation(notRecorded))) return;
     const view = u.view;
     view.requestMeasure({
       key: 'typewriter', // one measure per frame, however many updates arrive
@@ -88,6 +92,25 @@ export function loadText(view: EditorView, text: string): void {
     annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)],
   });
   view.dispatch({ effects: historyC.reconfigure(history()) });
+}
+
+/**
+ * Bring a read-only view up to `text` with the smallest single change (common prefix/suffix
+ * kept), not recorded and not in undo history. Unlike loadText the selection maps through the
+ * change and the scroll position stays: a tab following another tab's commits isn't yanked.
+ */
+export function followText(view: EditorView, text: string): void {
+  const cur = view.state.doc.toString();
+  if (cur === text) return;
+  const max = Math.min(cur.length, text.length);
+  let start = 0;
+  while (start < max && cur.charCodeAt(start) === text.charCodeAt(start)) start++;
+  let end = 0;
+  while (end < max - start && cur.charCodeAt(cur.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
+  view.dispatch({
+    changes: { from: start, to: cur.length - end, insert: text.slice(start, text.length - end) },
+    annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)],
+  });
 }
 
 export { setFocusMode };

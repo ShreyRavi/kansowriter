@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { IndexedDbAdapter } from './idb';
-import { DraftWriter, openDraftWriter, type Change } from './writer';
+import { DamagedDraftError, DraftWriter, openDraftWriter, type Change } from './writer';
 import { newDraft } from '../core/draft';
 import { wordsToday, dayKey } from '../core/words';
 import { replay } from '../core/draft';
@@ -320,6 +320,24 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(loaded.text).toBe('good');
   });
 
+  it('DamagedDraftError carries the head and epoch the readable text came from; a repair after a change is refused', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'good', T0);
+    await w.flush(true, T0 + 500);
+    await db.db.ops.add({ draftId: 'd1', seq: 1, op: [0, 0, 99, 'x'] });
+    await db.db.drafts.update('d1', { head: 2 });
+    const rec = (await db.getRecord('d1'))!;
+    const err = await openDraftWriter(db, 'd1', { onStale: () => {}, onCommit: () => {} }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DamagedDraftError);
+    const d = err as DamagedDraftError;
+    expect([d.text, d.head, d.epoch]).toEqual(['good', 2, rec.epoch]);
+    // another tab repaired it meanwhile: same head after a fresh op, but a renewed epoch
+    const other = await db.clearHistory('d1', 'theirs', T0 + 1000, d.head, d.epoch);
+    expect(other.ok).toBe(true);
+    await db.db.drafts.update('d1', { head: 2 });
+    expect((await db.clearHistory('d1', d.text, T0 + 2000, d.head, d.epoch)).ok).toBe(false);
+  });
+
   it('import into a non-empty database keeps existing days and rebuilds snapshots', async () => {
     const { w } = await makeWriter();
     for (let i = 0; i < 501; i++) {
@@ -370,6 +388,19 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(load).toHaveBeenCalledTimes(1);
     expect(b.currentText).toBe('one two');
     expect(b.head).toBe(2);
+  });
+
+  it('openDraftWriter reloads a preloaded draft whose head matches but whose epoch was renewed', async () => {
+    await db.createDraft(newDraft('d1', T0));
+    const preloaded = (await db.loadDraft('d1'))!; // head 0, text ''
+    const cleared = await db.clearHistory('d1', 'rewritten', T0 + 100, 0, preloaded.record.epoch); // head 0 again, new epoch
+    expect(cleared.ok).toBe(true);
+    const load = vi.spyOn(db, 'loadDraft');
+    const w = await openDraftWriter(db, 'd1', { onStale: () => {}, onCommit: () => {} }, () => 0, preloaded);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(w.head).toBe(0);
+    expect(w.currentText).toBe('rewritten');
+    expect(w.draft.epoch).not.toBe(preloaded.record.epoch);
   });
 
   it('rejects files that are not backups', async () => {

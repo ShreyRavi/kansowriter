@@ -63,6 +63,7 @@ function open(tag: string, log: string[], clear?: (w: DraftWriter, now: number) 
     {
       onWritable: () => log.push(`${tag}:writable`),
       onReadOnly: (r) => log.push(`${tag}:readonly:${r}`),
+      onHandedOver: () => log.push(`${tag}:handed-over-done`),
     },
     clear,
   );
@@ -205,6 +206,41 @@ describe('attachDraftSession (single writer, R23)', () => {
     await until(() => log.includes('b:readonly:other-tab'));
     await b.takeOver();
     await until(() => log.includes('a:stale:lost?'));
+  });
+
+  it('onHandedOver fires only after the final flush committed and released was posted', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['hello'], at: Date.now(), kind: 'type' }); // still pending
+    const orig = BroadcastChannel.prototype.postMessage;
+    vi.spyOn(BroadcastChannel.prototype, 'postMessage').mockImplementation(function (this: BroadcastChannel, m: unknown) {
+      if ((m as { type?: string })?.type === 'released') log.push('post:released');
+      return orig.call(this, m);
+    });
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => log.includes('a:handed-over-done'));
+    const i = (s: string) => log.indexOf(s);
+    expect(i('a:readonly:handed-over')).toBeLessThan(i('post:released'));
+    expect(i('post:released')).toBeLessThan(i('a:handed-over-done'));
+    expect((await db.loadDraft('d1'))!.text).toBe('hello');
+    expect(count(log, 'a:stale')).toBe(0);
+  });
+
+  it('onHandedOver is not called when the final flush fails: onStale hands the text back instead', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['kept'], at: Date.now(), kind: 'type' });
+    vi.spyOn(db, 'append').mockRejectedValue(new Error('QuotaExceededError'));
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => log.includes('a:stale:kept'));
+    await until(() => b.writer !== null);
+    expect(log).not.toContain('a:handed-over-done');
   });
 
   it('a failed write on dispose hands the text back and still releases the lock', async () => {

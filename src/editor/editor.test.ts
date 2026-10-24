@@ -1,12 +1,12 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fc from 'fast-check';
 import { EditorState } from '@codemirror/state';
 import { EditorView } from '@codemirror/view';
 import { redoDepth, undo, undoDepth } from '@codemirror/commands';
 import { apply } from '../core/kop';
 import { kindOf, runsFromTransaction } from './recorder';
-import { createEditor, loadText } from './setup';
+import { createEditor, followText, loadText } from './setup';
 import { paragraphAt, sentenceAt, type FocusMode } from './focus';
 import type { Change } from '../storage/writer';
 
@@ -108,6 +108,16 @@ describe('hybrid markdown (R6, text-only)', () => {
     expect(gaps()).toEqual([false, false, false, true, false]);
   });
 
+  it('keeps cm-gap under a range selection (⌘A never reflows); only an empty cursor removes it', () => {
+    const doc = 'one\n\ntwo\n\nthree';
+    const { view } = mount(doc, 0);
+    const gaps = () => [...view.contentDOM.querySelectorAll('.cm-line')].map((l) => l.classList.contains('cm-gap'));
+    view.dispatch({ selection: { anchor: 0, head: doc.length } });
+    expect(gaps()).toEqual([false, true, false, true, false]);
+    view.dispatch({ selection: { anchor: 9 } }); // empty cursor on the second blank line
+    expect(gaps()).toEqual([false, true, false, false, false]);
+  });
+
   it('does not mark double blanks, a leading blank or the last line', () => {
     const { view } = mount('\none\n\n\ntwo\n', 1);
     const gaps = [...view.contentDOM.querySelectorAll('.cm-line')].map((l) => l.classList.contains('cm-gap'));
@@ -141,15 +151,18 @@ describe('focus mode', () => {
     expect(dimmed).toBe('One. |Four');
   });
 
-  it('paragraphAt stays fast and correct within bounds on a doc without blank lines', () => {
+  it('paragraphAt walks only within bounds, and is correct, on a doc without blank lines', () => {
     const doc = Array.from({ length: 50_000 }, (_, i) => `line ${i}`).join('\n');
     const state = EditorState.create({ doc });
     const pos = state.doc.line(25_000).from;
-    const t0 = performance.now();
-    let r = { from: 0, to: 0 };
-    for (let i = 0; i < 100; i++) r = paragraphAt(state, pos, 24_950, 25_050);
-    expect(performance.now() - t0).toBeLessThan(50);
-    expect(r).toEqual({ from: state.doc.line(24_950).from, to: state.doc.line(25_050).to });
+    const [minLine, maxLine] = [24_950, 25_050];
+    const expected = { from: state.doc.line(minLine).from, to: state.doc.line(maxLine).to };
+    const line = vi.spyOn(state.doc, 'line');
+    const r = paragraphAt(state, pos, minLine, maxLine);
+    // structural bound: never scans the 50,000-line doc end to end
+    expect(line.mock.calls.length).toBeLessThanOrEqual(maxLine - minLine + 2);
+    line.mockRestore();
+    expect(r).toEqual(expected);
   });
 });
 
@@ -197,5 +210,27 @@ describe('loadText', () => {
     expect(undoDepth(view.state)).toBe(1);
     undo(view);
     expect(view.state.doc.toString()).toBe('their newer text');
+  });
+});
+
+describe('followText', () => {
+  it('applies only the differing middle, unrecorded, keeping the selection and undo history', () => {
+    const { view, changes } = mount('alpha beta gamma', 0);
+    view.dispatch({ changes: { from: 0, insert: 'x' }, userEvent: 'input.type' });
+    changes.length = 0;
+    const depth = undoDepth(view.state);
+    view.dispatch({ selection: { anchor: view.state.doc.length - 2 } }); // inside "gamma"
+    followText(view, 'xalpha BETA! gamma');
+    expect(view.state.doc.toString()).toBe('xalpha BETA! gamma');
+    expect(view.state.selection.main.head).toBe(view.state.doc.length - 2); // still inside "gamma"
+    expect(changes).toHaveLength(0);
+    expect(undoDepth(view.state)).toBe(depth);
+  });
+
+  it('is a no-op for equal text', () => {
+    const { view } = mount('same', 2);
+    const before = view.state;
+    followText(view, 'same');
+    expect(view.state).toBe(before);
   });
 });

@@ -8,10 +8,10 @@ import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, 
 /**
  * Replay on a rope: each op costs O(runs × log n) instead of copying the whole string, so a
  * novel-length history loads and imports in seconds (string replay is ops × length). Stops at the
- * first op that doesn't apply and returns the text so far with its index (null when all applied).
+ * first op that doesn't apply and returns the text so far with ok: false (ok: true when all applied).
  * `onSnapshot` gets op indexes counted from the start of `ops`.
  */
-function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text: Text) => void): { doc: Text; failedAt: number | null } {
+function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text: Text) => void): { doc: Text; ok: boolean } {
   let doc = Text.of(base.split('\n'));
   for (let i = 0; i < ops.length; i++) {
     let next = doc;
@@ -29,11 +29,11 @@ function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text
         break;
       }
     }
-    if (!ok || pos !== next.length) return { doc, failedAt: i };
+    if (!ok || pos !== next.length) return { doc, ok: false };
     doc = next;
     if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot?.(i + 1, doc);
   }
-  return { doc, failedAt: null };
+  return { doc, ok: true };
 }
 
 /**
@@ -101,8 +101,8 @@ export class IndexedDbAdapter implements StorageAdapter {
       const snap = await this.latestSnapshot(id, record.head);
       const ops = await this.loadOps(id, snap?.opIndex ?? 0);
       // A bad op must not make the whole draft unreadable: keep the last state that applied.
-      const { doc, failedAt } = replayRope(snap?.text ?? '', ops);
-      return failedAt === null ? { record, text: doc.toString() } : { record, text: doc.toString(), damaged: true };
+      const { doc, ok } = replayRope(snap?.text ?? '', ops);
+      return ok ? { record, text: doc.toString() } : { record, text: doc.toString(), damaged: true };
     });
   }
 
@@ -219,8 +219,8 @@ export class IndexedDbAdapter implements StorageAdapter {
     const prepared = data.drafts.map((d) => {
       const base = d.snapshots.find((s) => s.opIndex === 0);
       let last: { opIndex: number; doc: Text } | null = null;
-      const { doc, failedAt } = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
-      if (failedAt !== null) return null;
+      const { doc, ok } = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
+      if (!ok) return null;
       const l = last as { opIndex: number; doc: Text } | null;
       const snap: Snapshot | null = l ? { opIndex: l.opIndex, text: l.doc.toString() } : null;
       return { d, base, text: doc.toString(), snap };
