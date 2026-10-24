@@ -148,6 +148,33 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(texts.sort()).toEqual(['base', 'base more']);
   });
 
+  it('restoring an older backup on the same device, or the same file twice, adds nothing (idempotent)', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'old', T0);
+    await w.flush(true, T0 + 1000);
+    const older = await db.exportAll();
+    typeWord(w, ' newer', T0 + 5000);
+    await w.flush(true, T0 + 9000);
+    expect(await db.importAll(older)).toEqual({ added: 0, copies: 0, skipped: 1, damaged: 0 });
+    // a real divergence comes in once as a marked copy; importing the file again adds nothing
+    const forked = structuredClone(older);
+    forked.drafts[0]!.ops = [[0, 0, 'other']];
+    expect((await db.importAll(forked)).copies).toBe(1);
+    expect(await db.importAll(forked)).toEqual({ added: 0, copies: 0, skipped: 1, damaged: 0 });
+    expect((await db.listDrafts()).map((d) => d.meta.title)).toContain('old (from backup)');
+  });
+
+  it('imports a long history quickly (rope replay, no ops × length blowup)', async () => {
+    const ops: [number, number, ...(number | string)[]][] = [[0, 0, 'x'.repeat(200_000)]];
+    for (let i = 1; i < 20_000; i++) ops.push([0, 0, 200_000 + i - 1, 'y']);
+    const rec = { ...newDraft('big', T0), head: ops.length };
+    const started = Date.now();
+    const res = await db.importAll({ format: 'kansobackup', v: 1, exportedAt: T0, drafts: [{ record: rec, ops, snapshots: [] }], days: [] });
+    expect(res.added).toBe(1);
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect((await db.loadDraft('big'))!.text.length).toBe(200_000 + 19_999);
+  });
+
   it('a draft whose ops do not replay is left out instead of failing the whole import', async () => {
     const { w } = await makeWriter();
     typeWord(w, 'fine', T0);

@@ -207,7 +207,13 @@ test.describe('document commands and failure paths', () => {
     await expect(page.getByText('This tab stopped saving.')).toBeVisible({ timeout: 5000 });
     await expect(editor).toHaveAttribute('contenteditable', 'false');
     await page.getByRole('button', { name: 'Copy unsaved text' }).click();
-    await expect(page.locator('.notice')).toContainText(/Copied|Selected/);
+    await expect(page.locator('.notice')).toContainText(/Copied|Selected/);    // switching drafts asks once, and Leave anyway really leaves (never a trap)
+    await page.getByRole('button', { name: 'Open drafts' }).click();
+    await page.getByRole('dialog', { name: 'Drafts' }).getByRole('button', { name: 'New draft' }).click();
+    await expect(page.getByText('Your newest words aren’t saved.')).toBeVisible();
+    await page.getByRole('button', { name: 'Leave anyway' }).click();
+    await expect(page.getByRole('textbox', { name: 'Draft' })).toHaveAttribute('contenteditable', 'true');
+    await expect(page.getByRole('textbox', { name: 'Draft' })).not.toContainText('first');
   });
 });
 

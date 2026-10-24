@@ -123,7 +123,8 @@ export function shouldSnapshot(head: number): boolean {
  */
 export function renameChange(doc: string, title: string): { from: number; to: number; insert: string } {
   const name = title.trim() || 'Untitled';
-  const m = /^(\s*)((#{1,6})(?: [^\n]*)?)(?=\n|$)/.exec(doc);
+  // leading blank lines, then at most 3 spaces (4 would be an indented code block in CommonMark)
+  const m = /^((?:[ \t]*\n)*[ ]{0,3})((#{1,6})(?:[ \t][^\n]*)?)(?=\n|$)/.exec(doc);
   if (m) return { from: m[1]!.length, to: m[1]!.length + m[2]!.length, insert: `${m[3]} ${name}` };
   return { from: 0, to: 0, insert: doc.trim() ? `# ${name}\n\n` : `# ${name}` };
 }

@@ -62,6 +62,9 @@ export function attachDraftSession(
   /** writer whose cooperative handover flush is still running (a steal can land mid-flush) */
   let handingOver: DraftWriter | null = null;
   let handover: Promise<void> | null = null;
+  /** settles when the lock is actually free again (the request's callback has returned) */
+  let held: Promise<unknown> = Promise.resolve();
+  let disposeDone: Promise<void> | null = null;
   const safe = (f: () => void) => {
     try {
       f();
@@ -115,15 +118,18 @@ export function attachDraftSession(
 
   const request = (options: LockOptions) => {
     const gen = ++generation;
-    return locks!.request(name, options, (lock) => hold(lock, gen)).catch(() => onLost(gen));
+    held = locks!.request(name, options, (lock) => hold(lock, gen)).catch(() => onLost(gen));
+    return held;
   };
 
   if (locks) {
     const prior = disposing.get(name);
     if (prior)
-      void prior.then(() => {
-        if (!disposed) void request({ ifAvailable: true });
-      });
+      void prior
+        .catch(() => {})
+        .then(() => {
+          if (!disposed) void request({ ifAvailable: true });
+        });
     else void request({ ifAvailable: true });
   } else {
     // no Web Locks: head + epoch checks (R5) still protect the log
@@ -166,6 +172,8 @@ export function attachDraftSession(
       handingOver = null;
       if (w.dirty) w.abandon(); // the final write failed: hand the text back instead of losing it
       release?.();
+      // announce only once the lock manager has it back, or the requester's ifAvailable misses it
+      await held;
       if (!disposed) {
         try {
           bc?.postMessage({ type: 'released', draftId } satisfies ChannelMessage);
@@ -225,7 +233,7 @@ export function attachDraftSession(
         if (disposed) return;
         await new Promise<void>((resolve) => {
           const gen = ++generation;
-          void locks
+          held = locks
             // after 'released' another waiting tab may win: never queue behind it (it'd silently
             // become the writer much later); losing the race just stays read-only
             .request(name, released ? { ifAvailable: true } : { steal: true }, async (lock) => {
@@ -243,12 +251,20 @@ export function attachDraftSession(
       return inflight;
     },
     dispose() {
-      if (disposed) return disposing.get(name) ?? Promise.resolve();
+      if (disposeDone) return disposeDone;
       disposed = true;
-      const done = disposeInner().finally(() => {
-        if (disposing.get(name) === done) disposing.delete(name);
-      });
+      // chain on any earlier session still releasing, so the map's entry covers all of them
+      const prior = disposing.get(name);
+      const done: Promise<void> = Promise.all([prior?.catch(() => {}), disposeInner()])
+        .then(
+          () => {},
+          () => {},
+        )
+        .finally(() => {
+          if (disposing.get(name) === done) disposing.delete(name);
+        });
       disposing.set(name, done);
+      disposeDone = done;
       return done;
     },
     async clearHistory(now = Date.now()) {

@@ -98,9 +98,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           onWritable: (w) => {
             loadText(view, w.currentText);
             if (view.state.doc.length !== w.currentText.length) {
-              // the editor normalized the text (e.g. \r line breaks): recording would desync from the log
-              sessionRef.current?.dispose();
-              setNotice({ kind: 'open-error' });
+              // the editor normalized the text (e.g. \r line breaks): recording would desync from the
+              // log, so offer the same repair as a damaged history (rebase on the text as shown)
+              void sessionRef.current?.dispose();
+              setNotice({ kind: 'damaged', text: view.state.doc.toString() });
               return;
             }
             writerRef.current = w;
@@ -113,7 +114,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
             setReadOnly(view, true);
             setChromeVisible(true);
             if (reason === 'error') {
-              setNotice(error instanceof DamagedDraftError ? { kind: 'damaged', text: error.text } : { kind: 'open-error' });
+              // never replace a stale notice: it guards unsaved words still in the editor
+              setNotice((n) =>
+                n?.kind === 'stale' ? n : error instanceof DamagedDraftError ? { kind: 'damaged', text: error.text } : { kind: 'open-error' },
+              );
             } else setNotice((n) => (n?.kind === 'stale' ? n : { kind: 'readonly' }));
           },
         },
@@ -245,13 +249,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
 
   // ---------- leaving with unsaved text ----------
   /** Try to save before switching drafts; if it can't, stay and offer the copy escape. */
+  const pendingLeave = useRef<(() => void) | null>(null);
   const leave = useCallback(
     async (go: () => void) => {
       const w = writerRef.current;
       if (w?.dirty) await w.flush(true);
       if (w?.dirty || notice?.kind === 'stale') {
+        // the editor still shows the words; Copy keeps them, Leave anyway goes (never a trap)
+        pendingLeave.current = go;
         setChromeVisible(true);
-        setNotice((n) => (n?.kind === 'stale' ? n : { kind: 'unsaved-leave' }));
+        setNotice({ kind: 'unsaved-leave' });
         return;
       }
       go();
@@ -261,7 +268,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   leaveRef.current = leave;
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (writerRef.current?.dirty || notice?.kind === 'stale') e.preventDefault();
+      if (writerRef.current?.dirty || notice?.kind === 'stale' || notice?.kind === 'unsaved-leave') {
+        e.preventDefault();
+        e.returnValue = ''; // older Chromium / Safari only prompt with this set
+      }
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
@@ -395,10 +405,19 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
             )}
             {notice.kind === 'unsaved-leave' && (
               <>
-                <span>Couldn’t save your newest words.</span>
+                <span>Your newest words aren’t saved.</span>
                 {copyButton}
-                <button type="button" className="text-btn" onClick={() => setNotice(null)}>
-                  Keep writing
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() => {
+                    const go = pendingLeave.current;
+                    pendingLeave.current = null;
+                    setNotice(null);
+                    go?.();
+                  }}
+                >
+                  Leave anyway
                 </button>
               </>
             )}

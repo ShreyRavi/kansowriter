@@ -106,3 +106,14 @@ describe('renameChange (rename never overwrites the first line of prose)', () =>
     expect(run('# X', '  ')).toBe('# Untitled');
   });
 });
+
+describe('renameChange edge cases', () => {
+  const run = (doc: string, t: string) => {
+    const c = renameChange(doc, t);
+    return doc.slice(0, c.from) + c.insert + doc.slice(c.to);
+  };
+  it('a tab after # is still a heading; 4-space indent is code, not a heading', () => {
+    expect(run('#\tOld\nx', 'New')).toBe('# New\nx');
+    expect(run('    # code', 'T')).toBe('# T\n\n    # code');
+  });
+});

@@ -4,14 +4,32 @@ import { apply } from '../core/kop';
 import { newEpoch, SNAPSHOT_EVERY, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
 import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, StorageAdapter } from '../core/storage';
-import { BackupError } from '../core/backup';
+import { Text } from '@codemirror/state';
+import { runsOf } from '../core/kop';
 
-/** total characters copied while replaying an import (~a few seconds of work) */
-const REPLAY_BUDGET = 4e9;
-class ReplayBudgetError extends BackupError {
-  constructor() {
-    super('This backup is too large to import here');
-  }
+/**
+ * Replay on a rope: each op costs O(runs × log n) instead of copying the whole string, so a
+ * novel-length history imports in seconds (string replay is ops × length). Throws on bad coverage.
+ */
+function replayRope(base: string, ops: Op[], onSnapshot: (opIndex: number, text: Text) => void): Text {
+  let doc = Text.of(base.split('\n'));
+  ops.forEach((op, i) => {
+    let pos = 0;
+    for (const r of runsOf(op)) {
+      if (typeof r === 'string') {
+        doc = doc.replace(pos, pos, Text.of(r.split('\n')));
+        pos += r.length;
+      } else if (r >= 0) pos += r;
+      else {
+        if (pos - r > doc.length) throw new Error('delete past end');
+        doc = doc.replace(pos, pos - r, Text.empty);
+      }
+      if (pos > doc.length) throw new Error('retain past end');
+    }
+    if (pos !== doc.length) throw new Error('runs do not cover the document');
+    if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot(i + 1, doc);
+  });
+  return doc;
 }
 
 /**
@@ -201,24 +219,17 @@ export class IndexedDbAdapter implements StorageAdapter {
    * ops don't replay is left out and counted, instead of failing the whole import.
    */
   async importAll(data: BackupData): Promise<ImportResult> {
-    // replay cost is ops × text length; a crafted (or absurd) file must not hang the tab
-    let budget = REPLAY_BUDGET;
     const prepared = data.drafts.map((d) => {
       const base = d.snapshots.find((s) => s.opIndex === 0);
-      let text = base?.text ?? '';
-      let snap: Snapshot | null = null;
+      let last: { opIndex: number; doc: Text } | null = null;
       try {
-        d.ops.forEach((op, i) => {
-          budget -= text.length + 1;
-          if (budget < 0) throw new ReplayBudgetError();
-          text = apply(text, op);
-          if ((i + 1) % SNAPSHOT_EVERY === 0) snap = { opIndex: i + 1, text };
-        });
-      } catch (e) {
-        if (e instanceof ReplayBudgetError) throw e;
+        const doc = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
+        const l = last as { opIndex: number; doc: Text } | null;
+        const snap: Snapshot | null = l ? { opIndex: l.opIndex, text: l.doc.toString() } : null;
+        return { d, base, text: doc.toString(), snap };
+      } catch {
         return null;
       }
-      return { d, base, text, snap: snap as Snapshot | null };
     });
     return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots, this.db.days], async () => {
       const r: ImportResult = { added: 0, copies: 0, skipped: 0, damaged: 0 };
@@ -229,24 +240,43 @@ export class IndexedDbAdapter implements StorageAdapter {
         }
         const { d, base, text, snap } = p;
         let id = d.record.id;
+        let meta = d.record.meta;
         if (await this.db.drafts.get(id)) {
-          if ((await this.loadDraft(id))?.text === text) {
+          if (await this.alreadyHere(id, d.ops, text)) {
             r.skipped++;
             continue;
           }
           id = crypto.randomUUID();
+          meta = { ...meta, title: `${meta.title} (from backup)` };
           r.copies++;
         }
         r.added++;
         const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
         if (snap) snaps.push({ draftId: id, ...(snap as Snapshot) });
-        await this.db.drafts.add({ ...d.record, id, head: d.ops.length, epoch: newEpoch() });
+        await this.db.drafts.add({ ...d.record, id, meta, head: d.ops.length, epoch: newEpoch() });
         await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: id, seq, op })));
         if (snaps.length) await this.db.snapshots.bulkAdd(snaps);
       }
       for (const day of data.days) if (!(await this.db.days.get(day.key))) await this.db.days.add(day);
       return r;
     });
+  }
+
+  /**
+   * The backup's version of a draft is already on this device when: the text matches; the local
+   * history starts with the backup's ops (an older backup restored onto the same device); or an
+   * earlier import already added it as a copy. Only real divergence becomes a copy.
+   */
+  private async alreadyHere(id: string, ops: Op[], text: string): Promise<boolean> {
+    if ((await this.loadDraft(id))?.text === text) return true;
+    if (ops.length) {
+      const local = await this.db.ops.where('[draftId+seq]').between([id, 0], [id, ops.length], true, false).toArray();
+      if (local.length === ops.length && local.every((row, i) => JSON.stringify(row.op) === JSON.stringify(ops[i]))) return true;
+    }
+    for (const rec of await this.db.drafts.toArray()) {
+      if (rec.id !== id && (await this.loadDraft(rec.id))?.text === text) return true;
+    }
+    return false;
   }
 
   async getSetting<T>(key: string): Promise<T | undefined> {

@@ -352,7 +352,7 @@ function Confirm({ text, action, extra, onCancel, onConfirm }: { text: string; a
           e.preventDefault();
           onCancel();
         }
-        e.stopPropagation(); // keep Enter/arrows on the focused button, not cmdk
+        if (!e.metaKey && !e.ctrlKey) e.stopPropagation(); // keep Enter/arrows on the focused button, not cmdk (⌘K still works)
       }}
     >
       <span>{text}</span>
