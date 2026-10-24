@@ -202,3 +202,12 @@ export async function removeDraftsUnderneath(page: Page) {
     db.close();
   });
 }
+
+/** Make this page report hidden (or visible again) and fire visibilitychange, as switching tabs does. */
+export async function setVisibility(page: Page, state: 'hidden' | 'visible') {
+  await page.evaluate((state) => {
+    Object.defineProperty(document, 'visibilityState', { value: state, configurable: true });
+    Object.defineProperty(document, 'hidden', { value: state === 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, state);
+}

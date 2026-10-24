@@ -5,7 +5,7 @@
 //   no_claim=two tabs of one browser context stand in for two windows (BroadcastChannel/Web Locks real, nothing mocked)
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { mod, runCommand, savedState, settle, startWriting } from './helpers';
+import { mod, runCommand, savedState, setVisibility, settle, startWriting } from './helpers';
 
 test('a read-only tab refuses to delete the draft another tab is writing', async ({ page, context }) => {
   const editor = await startWriting(page);
@@ -40,11 +40,17 @@ test('a read-only tab exports what the writing tab committed and refuses to rena
   const second = await context.newPage();
   await second.goto('/');
   await expect(second.getByText('Open in another tab.')).toBeVisible();
+  await expect.poll(async () => (await savedState(second)).editor).toBe('Shared title');
+  await second.waitForTimeout(1000); // the catch-up it scheduled on opening runs first (no signal to poll)
 
+  // the read-only tab lags: hidden, its follower defers the catch-up, so its view is behind storage
+  await setVisibility(second, 'hidden');
   await editor.pressSequentially(' and more words');
   await settle(page);
   const committed = (await savedState(page)).editor!;
   expect(committed).toBe('Shared title and more words');
+  await second.waitForTimeout(1000); // a follow (coalesced 300 ms, then a load) would have run by now
+  expect((await savedState(second)).editor, 'the read-only view is behind').toBe('Shared title');
 
   await second.keyboard.press(`${await mod(second)}+k`);
   const download = second.waitForEvent('download');
