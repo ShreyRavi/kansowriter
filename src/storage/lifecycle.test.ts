@@ -2,7 +2,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { attachDraftSession, STEAL_AFTER_MS, type SessionHandle } from './lifecycle';
-import { DraftWriter } from './writer';
+import { BATCH_MS, DraftWriter } from './writer';
 import { IndexedDbAdapter } from './idb';
 import { newDraft } from '../core/draft';
 
@@ -507,6 +507,73 @@ describe('attachDraftSession state matrix', () => {
     expect(count(log, 'a:writable')).toBe(1);
     expect(log).toContain('a:readonly:error');
     expect(s.writer).toBeNull();
+  });
+
+  /** a session whose rebuild (the second openWriter) waits on `gate` */
+  function openGatedRebuild(tag: string, log: string[]) {
+    let opens = 0;
+    const gate: { open?: () => void } = {};
+    const s = attachDraftSession(
+      'd1',
+      async () => {
+        if (++opens === 2) await new Promise<void>((r) => (gate.open = r));
+        const loaded = (await db.loadDraft('d1'))!;
+        return new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => log.push(`${tag}:stale:${t}`), onCommit: () => {} });
+      },
+      {
+        onWritable: () => log.push(`${tag}:writable`),
+        onReadOnly: (r) => log.push(`${tag}:readonly:${r}`),
+        onHandedOver: () => log.push(`${tag}:handed-over-done`),
+      },
+      clearInDb,
+    );
+    sessions.push(s);
+    return { s, gate };
+  }
+
+  it('clearHistory: timer and pagehide during the rebuild never flush the old writer; edits carry over', async () => {
+    const log: string[] = [];
+    const { s, gate } = openGatedRebuild('a', log);
+    await until(() => s.writer !== null);
+    const w = s.writer!;
+    w.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof gate.open === 'function'); // clear() done, epoch renewed, rebuild pending
+    w.push({ runs: [4, ' more'], at: Date.now(), kind: 'other' });
+    await new Promise((r) => setTimeout(r, BATCH_MS + 100)); // the batch timer fires meanwhile
+    window.dispatchEvent(new Event('pagehide'));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(w.isStale).toBe(false);
+    gate.open!();
+    expect(await p).toBe(true);
+    expect(count(log, 'a:stale:')).toBe(0);
+    expect(count(log, 'a:writable')).toBe(2);
+    expect(s.writer!.currentText).toBe('base more');
+    await s.writer!.flush(true);
+    expect((await db.loadDraft('d1'))!.text).toBe('base more');
+  });
+
+  it('clearHistory: a handover-request during the rebuild is answered after it, with the rebuilt writer', async () => {
+    const log: string[] = [];
+    const { s, gate } = openGatedRebuild('a', log);
+    await until(() => s.writer !== null);
+    s.writer!.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof gate.open === 'function');
+    s.writer!.push({ runs: [4, ' more'], at: Date.now(), kind: 'type' }); // still pending
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    const t = b.takeOver();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(log).not.toContain('a:readonly:handed-over'); // deferred while rebuilding
+    gate.open!();
+    expect(await p).toBe(true);
+    await t;
+    await until(() => b.writer !== null);
+    expect(log.indexOf('a:readonly:handed-over')).toBeGreaterThan(log.lastIndexOf('a:writable'));
+    expect(count(log, 'a:stale:')).toBe(0);
+    expect(b.writer!.currentText).toBe('base more');
+    expect(await db.loadOps('d1')).toHaveLength(1); // history cleared, then just the carried word
   });
 
   it('queued-closed × handover: flush(true) commits the queue and the new tab loads it', async () => {

@@ -1,4 +1,4 @@
-import { isValidOp, runsOf, targetLength, type Op } from './kop';
+import { opCoverage } from './kop';
 import type { BackupData, BackupDraft } from './storage';
 import type { Day } from './words';
 
@@ -93,14 +93,11 @@ function isDraft(d: unknown): d is BackupDraft {
   for (const s of d.snapshots) {
     if (!isObj(s) || !isInt(s.opIndex) || s.opIndex > d.ops.length || typeof s.text !== 'string' || s.text.includes('\r')) return false;
   }
-  // Ops must replay from the base snapshot. Track only the length (linear, no string building);
-  // the importer rebuilds later snapshots itself instead of trusting their text.
-  const base = d.snapshots.find((s) => (s as { opIndex: number }).opIndex === 0) as { text: string } | undefined;
-  let len = base?.text.length ?? 0;
-  for (const op of d.ops as Op[]) {
-    // the editor normalizes line breaks to \n, so text with \r would desync it from the log
-    if (!isValidOp(op, len) || op.some((r) => typeof r === 'string' && r.includes('\r'))) return false;
-    len = targetLength(runsOf(op));
+  for (const op of d.ops) {
+    // shape only: whether the ops replay is the importer's call, per draft, so one damaged draft
+    // (which Export all still writes) leaves just that draft out instead of the whole file.
+    // The editor normalizes line breaks to \n, so text with \r would desync it from the log.
+    if (opCoverage(op) === null || (op as unknown[]).some((r) => typeof r === 'string' && r.includes('\r'))) return false;
   }
   return true;
 }

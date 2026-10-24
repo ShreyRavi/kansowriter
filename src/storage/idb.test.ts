@@ -167,7 +167,7 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     forked.drafts[0]!.ops = [[0, 0, 'other']];
     expect((await db.importAll(forked)).copies).toBe(1);
     expect(await db.importAll(forked)).toEqual({ added: 0, copies: 0, skipped: 1, damaged: 0 });
-    expect((await db.listDrafts()).map((d) => d.meta.title)).toContain('old (from backup)');
+    expect((await db.listDrafts()).map((d) => d.meta.title)).toContain('other (from backup)'); // title from the copy's own text
   });
 
   it('imports a long history quickly (rope replay, no ops × length blowup)', async () => {
@@ -192,9 +192,31 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     typeWord(w, 'fine', T0);
     await w.flush(true, T0 + 1000);
     const data = await db.exportAll();
-    data.drafts.push({ record: { ...data.drafts[0]!.record, id: 'bad' }, ops: [[0, 0, 5, 'x']], snapshots: [] });
+    data.drafts.push({ record: { ...newDraft('bad', T0) }, ops: [[0, 0, 5, 'x']], snapshots: [] });
+    // through the file decoder: one damaged draft must not make the whole backup unrestorable
+    const decoded = await decodeBackup(await encodeBackup(data));
     const target = new IndexedDbAdapter(`test-${n++}`);
-    expect(await target.importAll(data)).toEqual({ added: 1, copies: 0, skipped: 0, damaged: 1 });
+    expect(await target.importAll(decoded)).toEqual({ added: 1, copies: 0, skipped: 0, damaged: 1 });
+    expect((await target.listDrafts()).map((d) => d.id)).toEqual(['d1']);
+    expect((await target.loadDraft('d1'))!.text).toBe('fine');
+  });
+
+  it('imported meta is derived from the replayed text, not copied from the file', async () => {
+    const rec = { ...newDraft('m1', T0), meta: { title: 'Forged', excerpt: 'lies', words: 999 } };
+    const file = {
+      format: 'kansobackup',
+      v: 1,
+      exportedAt: T0,
+      drafts: [{ record: rec, ops: [[0, 0, '# Real\n\nthree more words']], snapshots: [] }],
+      days: [],
+    };
+    await db.importAll(await decodeBackup(await encodeBackup(file as never)));
+    expect((await db.getRecord('m1'))!.meta).toEqual({ title: 'Real', excerpt: 'three more words', words: 4 });
+    // a diverged copy still gets the "(from backup)" suffix on the derived title
+    const forked = structuredClone(file);
+    forked.drafts[0]!.ops = [[0, 0, 'Other text']];
+    await db.importAll(forked as never);
+    expect((await db.listDrafts()).map((d) => d.meta.title).sort()).toEqual(['Other text (from backup)', 'Real']);
   });
 
   it('backups with carriage returns are rejected (the editor would desync from the log)', async () => {

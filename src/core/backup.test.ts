@@ -20,10 +20,25 @@ describe('decodeBackup validation (#6)', () => {
     await expect(decodeBackup(await enc(data))).resolves.toBeTruthy();
   });
 
+  it('accepts a draft whose ops do not cover the document (the importer leaves just that draft out)', async () => {
+    const data = good({
+      drafts: [
+        { record: rec, ops: [[0, 0, 'ok']], snapshots: [] },
+        { record: { ...rec, id: 'b' }, ops: [[0, 0, 5, 'x']], snapshots: [] },
+      ],
+    });
+    await expect(decodeBackup(await enc(data))).resolves.toBeTruthy();
+  });
+
   it.each([
     ['wrong format', good({ format: 'x' })],
     ['wrong version', good({ v: 2 })],
-    ['op does not cover the doc', good({ drafts: [{ record: rec, ops: [[0, 0, 5]], snapshots: [] }] })],
+    ['op that is not an array', good({ drafts: [{ record: rec, ops: [{}], snapshots: [] }] })],
+    ['op with a negative dt', good({ drafts: [{ record: rec, ops: [[-1, 0, 'a']], snapshots: [] }] })],
+    ['op with a fractional d', good({ drafts: [{ record: rec, ops: [[0, 0.5, 'a']], snapshots: [] }] })],
+    ['op with a zero run', good({ drafts: [{ record: rec, ops: [[0, 0, 0, 'a']], snapshots: [] }] })],
+    ['op with an empty insert', good({ drafts: [{ record: rec, ops: [[0, 0, '']], snapshots: [] }] })],
+    ['op with a non-run', good({ drafts: [{ record: rec, ops: [[0, 0, null]], snapshots: [] }] })],
     ['null snapshot', good({ drafts: [{ record: rec, ops: [], snapshots: [null] }] })],
     ['non-string snapshot text', good({ drafts: [{ record: rec, ops: [], snapshots: [{ opIndex: 0, text: 5 }] }] })],
     ['snapshot past the log', good({ drafts: [{ record: rec, ops: [], snapshots: [{ opIndex: 3, text: '' }] }] })],

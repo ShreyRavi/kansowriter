@@ -1,7 +1,7 @@
 import Dexie, { type Table } from 'dexie';
 import { Text } from '@codemirror/state';
 import { runsOf, type Op } from '../core/kop';
-import { newEpoch, SNAPSHOT_EVERY, type DraftMeta, type DraftRecord, type Snapshot } from '../core/draft';
+import { deriveMeta, newEpoch, SNAPSHOT_EVERY, type DraftMeta, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
 import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, StorageAdapter } from '../core/storage';
 
@@ -212,8 +212,9 @@ export class IndexedDbAdapter implements StorageAdapter {
    * Adds every draft from the file. A draft whose id is already here is skipped only when its
    * text matches; a draft that diverged (edited on another device) comes in as a copy with a new
    * id, so newer work is never dropped. Only the opIndex-0 base snapshot is trusted from the
-   * file; the newest snapshot is rebuilt by replaying the (already validated) ops. A draft whose
-   * ops don't replay is left out and counted, instead of failing the whole import.
+   * file; the newest snapshot is rebuilt by replaying the (shape-checked) ops. A draft whose
+   * ops don't replay is left out and counted, instead of failing the whole import. Meta (title,
+   * excerpt, words) is derived from the replayed text, never copied from the file.
    */
   async importAll(data: BackupData): Promise<ImportResult> {
     const prepared = data.drafts.map((d) => {
@@ -244,7 +245,7 @@ export class IndexedDbAdapter implements StorageAdapter {
         const rec = d.record;
         let id = rec.id;
         // rebuild from known fields only: unknown keys in the file never reach storage
-        let meta: DraftMeta = { title: rec.meta.title, excerpt: rec.meta.excerpt, words: rec.meta.words };
+        let meta: DraftMeta = deriveMeta(text);
         if (await this.db.drafts.get(id)) {
           if ((await this.alreadyHere(id, d.ops, text)) || (await localTexts()).has(text)) {
             r.skipped++;

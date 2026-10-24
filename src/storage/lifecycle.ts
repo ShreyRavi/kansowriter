@@ -180,9 +180,10 @@ export function attachDraftSession(
   document.addEventListener('visibilitychange', onHide);
   window.addEventListener('pagehide', onPageHide);
 
-  const onMessage = (e: MessageEvent<ChannelMessage>) => {
-    const m = e.data;
-    if (m.type !== 'handover-request' || m.draftId !== draftId || !writer) return;
+  /** a handover-request that arrived while clearHistory was rebuilding: answered once it is done */
+  let deferredHandover = false;
+  const handOver = () => {
+    if (!writer) return;
     const w = writer;
     writer = null;
     handingOver = w;
@@ -207,6 +208,13 @@ export function attachDraftSession(
     })().finally(() => {
       handover = null;
     });
+  };
+  const onMessage = (e: MessageEvent<ChannelMessage>) => {
+    const m = e.data;
+    if (m.type !== 'handover-request' || m.draftId !== draftId || !writer) return;
+    // mid-clear the old writer's flush would hit the renewed epoch: hand over the rebuilt one after
+    if (clearing) deferredHandover = true;
+    else handOver();
   };
   bc?.addEventListener('message', onMessage);
 
@@ -298,39 +306,45 @@ export function attachDraftSession(
       await w.flush(true);
       // lost the lock (handover/steal) or disposed while flushing: never rewrite history without it
       if (writer !== w || disposed || w.dirty || w.isStale) return false;
+      // held until the rebuilt writer takes over (or the error path retired w): a flush of w after
+      // clear() renewed the epoch would turn it stale, so typing meanwhile stays queued on w
       clearing = w;
       try {
         if (!(await clear(w, now))) return false;
+        if (w.isStale && writer === w && !disposed) {
+          // something else flushed w during the clear (e.g. export) and hit the renewed epoch: w has
+          // already handed its full text back through onStale. Rebuilding now would show a writable
+          // editor beside that stale notice, so retire w and stay read-only; the text is never lost.
+          writer = null;
+          readOnly('error');
+          return true;
+        }
+        let next: DraftWriter;
+        try {
+          next = await openWriter();
+        } catch (error) {
+          // history IS cleared, but the old writer holds a dead epoch: retire it, hand back edits
+          if (writer === w && !disposed) {
+            writer = null;
+            w.abandon();
+            readOnly('error', error);
+          }
+          return true;
+        }
+        if (writer !== w || disposed) return true; // lock changed hands meanwhile; the new holder loads fresh
+        // carry over anything typed while clearing, onto the rebuilt writer
+        for (const c of w.takeUnsaved()) next.push(c);
+        next.markOpened();
+        writer = next;
+        writable(next);
+        return true;
       } finally {
         clearing = null;
-      }
-      if (w.isStale && writer === w && !disposed) {
-        // something else flushed w during the clear (e.g. export) and hit the renewed epoch: w has
-        // already handed its full text back through onStale. Rebuilding now would show a writable
-        // editor beside that stale notice, so retire w and stay read-only; the text is never lost.
-        writer = null;
-        readOnly('error');
-        return true;
-      }
-      let next: DraftWriter;
-      try {
-        next = await openWriter();
-      } catch (error) {
-        // history IS cleared, but the old writer holds a dead epoch: retire it, hand back edits
-        if (writer === w && !disposed) {
-          writer = null;
-          w.abandon();
-          readOnly('error', error);
+        if (deferredHandover) {
+          deferredHandover = false;
+          if (!disposed) handOver();
         }
-        return true;
       }
-      if (writer !== w || disposed) return true; // lock changed hands meanwhile; the new holder loads fresh
-      // carry over anything typed while clearing, onto the rebuilt writer
-      for (const c of w.takeUnsaved()) next.push(c);
-      next.markOpened();
-      writer = next;
-      writable(next);
-      return true;
     },
   };
 }

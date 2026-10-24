@@ -30,22 +30,30 @@ export function targetLength(runs: Run[]): number {
   return n;
 }
 
-/** Structural validation of an untrusted op against the current document length. */
-export function isValidOp(op: unknown, docLength: number): op is Op {
-  if (!Array.isArray(op) || op.length < 2) return false;
+/**
+ * Shape of an untrusted op, without a document: dt and d are non-negative safe integers, each run
+ * is a non-empty string or a non-zero safe integer. Returns the length it covers, or null.
+ */
+export function opCoverage(op: unknown): number | null {
+  if (!Array.isArray(op) || op.length < 2) return null;
   const [dt, d] = op;
-  if (!Number.isSafeInteger(dt) || dt < 0 || !Number.isSafeInteger(d) || d < 0) return false;
+  if (!Number.isSafeInteger(dt) || dt < 0 || !Number.isSafeInteger(d) || d < 0) return null;
   let covered = 0;
   for (let i = 2; i < op.length; i++) {
     const r = op[i];
     if (typeof r === 'string') {
-      if (r.length === 0) return false;
+      if (r.length === 0) return null;
     } else if (typeof r === 'number') {
-      if (!Number.isSafeInteger(r) || r === 0) return false;
+      if (!Number.isSafeInteger(r) || r === 0) return null;
       covered += Math.abs(r);
-    } else return false;
+    } else return null;
   }
-  return covered === docLength;
+  return covered;
+}
+
+/** Structural validation of an untrusted op against the current document length. */
+export function isValidOp(op: unknown, docLength: number): op is Op {
+  return opCoverage(op) === docLength;
 }
 
 export function apply(doc: string, op: Op): string {
