@@ -1,6 +1,18 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { failIdb, freshStart, mod, openDrafts, restoreIdb, runCommand, savedState, settle, startWriting, write } from './helpers';
+import {
+  failIdb,
+  freshStart,
+  mod,
+  openDrafts,
+  restoreIdb,
+  runCommand,
+  savedState,
+  settle,
+  startWriting,
+  write,
+  requestedName,
+} from './helpers';
 
 test.describe('first visit and writing', () => {
   test('landing shows the name, the line types itself, and no third-party requests happen', async ({ page, baseURL }) => {
@@ -155,7 +167,7 @@ test.describe('palette, sidebar, tabs', () => {
     const download = page.waitForEvent('download');
     await page.keyboard.press(`${await mod(page)}+e`);
     const d = await download;
-    expect(d.suggestedFilename()).toBe('Export me.md');
+    expect(requestedName(d)).toBe('Export me.md');
   });
 });
 

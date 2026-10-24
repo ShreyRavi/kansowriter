@@ -5,7 +5,7 @@
 //   no_claim=two tabs of one browser context stand in for two windows (BroadcastChannel/Web Locks real, nothing mocked)
 import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { mod, runCommand, savedState, setVisibility, settle, startWriting } from './helpers';
+import { mod, runCommand, savedState, setVisibility, settle, startWriting, requestedName } from './helpers';
 
 test('a read-only tab refuses to delete the draft another tab is writing', async ({ page, context }) => {
   const editor = await startWriting(page);
@@ -56,7 +56,7 @@ test('a read-only tab exports what the writing tab committed and refuses to rena
   const download = second.waitForEvent('download');
   await runCommand(second, 'export markdown', /Export as Markdown/);
   const file = await download;
-  expect(file.suggestedFilename()).toBe('Shared title and more words.md');
+  expect(requestedName(file)).toBe('Shared title and more words.md');
   expect(readFileSync((await file.path())!, 'utf8')).toBe(committed);
 
   await runCommand(second, 'rename', /Rename draft/);

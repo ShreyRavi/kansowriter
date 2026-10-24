@@ -211,3 +211,6 @@ export async function setVisibility(page: Page, state: 'hidden' | 'visible') {
     document.dispatchEvent(new Event('visibilitychange'));
   }, state);
 }
+
+/** A download's file name as the app asked for it. Linux WebKit saves spaces as underscores (CI run 40140242486). */
+export const requestedName = (d: { suggestedFilename(): string }) => d.suggestedFilename().replace(/_/g, ' ');
