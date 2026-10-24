@@ -2,6 +2,9 @@ import { BATCH_MS, type DraftWriter } from './writer';
 import type { DraftRecord } from '../core/draft';
 
 export const STEAL_AFTER_MS = 2000;
+/** after 'released', how long a taker keeps trying for a lock that frees a moment late */
+const RELEASE_RETRIES = 10;
+const RELEASE_RETRY_MS = 100;
 const CHANNEL = 'kansowriter';
 
 export type ChannelMessage =
@@ -280,20 +283,26 @@ export function attachDraftSession(
       inflight = (async () => {
         const released = await waitForRelease();
         if (disposed) return;
-        await new Promise<void>((resolve) => {
-          const gen = ++generation;
-          held = locks
-            // after 'released' another waiting tab may win: never queue behind it (it'd silently
-            // become the writer much later); losing the race just stays read-only
-            .request(name, released ? { ifAvailable: true } : { steal: true }, async (lock) => {
-              resolve();
-              await hold(lock, gen);
-            })
-            .catch(() => {
-              resolve();
-              onLost(gen);
-            });
-        });
+        // after 'released' another waiting tab may win: never queue behind it (it'd silently become
+        // the writer much later). The holder's lock can also free a moment after its 'released'
+        // arrives (seen in WebKit), so retry briefly before settling for read-only.
+        const attempt = (retry: boolean) =>
+          new Promise<boolean>((resolve) => {
+            const gen = ++generation;
+            held = locks
+              .request(name, released ? { ifAvailable: true } : { steal: true }, async (lock) => {
+                if (!lock && retry && !disposed) return resolve(false);
+                resolve(true);
+                await hold(lock, gen);
+              })
+              .catch(() => {
+                resolve(true);
+                onLost(gen);
+              });
+          });
+        for (let i = 0; !(await attempt(released && i < RELEASE_RETRIES)); i++) {
+          await new Promise((r) => setTimeout(r, RELEASE_RETRY_MS));
+        }
       })().finally(() => {
         inflight = null;
       });

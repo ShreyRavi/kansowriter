@@ -448,7 +448,34 @@ class SlowReleaseLocks extends FakeLocks {
   }
 }
 
+/** Like FakeLocks, but a released lock only frees 150 ms after its request promise settles (WebKit). */
+class LaggyReleaseLocks {
+  private held = new Map<string, object>();
+  async request(name: string, opts: LockOptions, cb: (lock: Lock | null) => Promise<unknown>): Promise<unknown> {
+    if (this.held.has(name) && opts.ifAvailable) return cb(null);
+    const entry = {};
+    this.held.set(name, entry);
+    const v = await cb({ name, mode: 'exclusive' } as Lock);
+    setTimeout(() => this.held.get(name) === entry && this.held.delete(name), 150);
+    return v;
+  }
+}
+
 describe('attachDraftSession state matrix', () => {
+  it("takeOver after 'released' still gets the lock when it frees a moment late (WebKit)", async () => {
+    Object.defineProperty(navigator, 'locks', { value: new LaggyReleaseLocks(), configurable: true });
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['moved'], at: Date.now(), kind: 'other' });
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(b.writer!.currentText).toBe('moved');
+    expect(log.filter((l) => l === 'b:readonly:other-tab')).toHaveLength(1);
+  });
+
   it('re-open after dispose becomes writable even when the lock frees late', async () => {
     Object.defineProperty(navigator, 'locks', { value: new SlowReleaseLocks(), configurable: true });
     const log: string[] = [];
