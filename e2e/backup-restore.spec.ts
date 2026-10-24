@@ -4,7 +4,7 @@
 //   why_new=idb.test.ts round-trips at the adapter only; no e2e drives the sidebar export or the landing restore; seam=none;
 //   no_claim=restoring across different browsers/devices (same browser profile, storage cleared between export and restore)
 import { expect, test } from '@playwright/test';
-import { freshStart, settle, startWriting, write, openDrafts } from './helpers';
+import { freshStart, savedState, settle, startWriting, write, openDrafts } from './helpers';
 
 test('Export all from the sidebar, then restore it on a fresh start', async ({ page }, testInfo) => {
   const editor = await startWriting(page);
@@ -32,4 +32,54 @@ test('Export all from the sidebar, then restore it on a fresh start', async ({ p
   await expect(restored).toContainText('These words survive a wiped device.');
   await expect(page.locator('.header .title')).toHaveText('Kept safe');
   await expect(restored).toHaveAttribute('contenteditable', 'true');
+});
+
+// Value: protects=one damaged draft never makes Export all's file unrestorable: the good drafts come back and
+//   the feedback says how many were left out; fails_when=decodeBackup rejects the whole file for an op that
+//   doesn't replay, or the landing opens the editor before the "left out" feedback can be read;
+//   why_new=the round trip above has no damaged draft; seam=none;
+//   no_claim=how real corruption arises (the bad op is injected straight into IndexedDB)
+test('a backup with one damaged draft still restores the others and says one was left out', async ({ page }, testInfo) => {
+  const editor = await startWriting(page);
+  await write(page, editor, '# Good one\n\nThis draft is fine.');
+  await settle(page);
+
+  // a second draft whose only op doesn't cover the (empty) document, as a corrupt log would
+  await page.evaluate(async () => {
+    const db = await new Promise<IDBDatabase>((r) => {
+      const q = indexedDB.open('kansowriter');
+      q.onsuccess = () => r(q.result);
+    });
+    await new Promise<void>((resolve, reject) => {
+      const t = db.transaction(['drafts', 'ops'], 'readwrite');
+      const meta = { title: 'Broken', excerpt: '', words: 0 };
+      t.objectStore('drafts').put({ v: 1, id: 'broken', createdAt: 1, updatedAt: 1, meta, sessions: [], head: 1, epoch: 'e' });
+      t.objectStore('ops').put({ draftId: 'broken', seq: 0, op: [0, 0, 5, 'x'] });
+      t.oncomplete = () => resolve();
+      t.onerror = () => reject(t.error);
+    });
+    db.close();
+  });
+
+  await openDrafts(page);
+  const sidebar = page.getByRole('dialog', { name: 'Drafts' });
+  const downloading = page.waitForEvent('download');
+  await sidebar.getByRole('button', { name: 'Export all' }).click();
+  const download = await downloading;
+  const file = testInfo.outputPath(download.suggestedFilename());
+  await download.saveAs(file);
+
+  await freshStart(page);
+  await page.goto('/');
+  const choosing = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Restore from a backup' }).click();
+  await (await choosing).setFiles(file);
+
+  await expect(page.getByRole('status')).toHaveText('Added 1 draft, left out 1 draft that couldn’t be read');
+  await page.getByRole('button', { name: 'Open restored drafts' }).click();
+  const restored = page.getByRole('textbox', { name: 'Draft' });
+  await expect(restored).toContainText('This draft is fine.');
+  await expect(page.locator('.header .title')).toHaveText('Good one');
+  const { saved } = await savedState(page);
+  expect(saved.map((d) => d.title)).toEqual(['Good one']);
 });
