@@ -1,7 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { EditorView } from '@codemirror/view';
-import { createEditor, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
-import { attachDraftSession, channel, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
+import { createEditor, followText, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
+import { attachDraftSession, channel, FOLLOW_COALESCE_MS, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
 import { DamagedDraftError, openDraftWriter, type DraftWriter } from '../storage/writer';
 import { deriveMeta, renameChange, type DraftRecord } from '../core/draft';
 import { dayKey } from '../core/words';
@@ -27,7 +27,8 @@ type NoticeState =
   | { kind: 'readonly' }
   | { kind: 'saving-error' }
   | { kind: 'unsaved-leave' }
-  | { kind: 'damaged'; text: string }
+  /** head + epoch: the record `text` was read from; the repair refuses if the draft changed since */
+  | { kind: 'damaged'; text: string; head: number; epoch: string }
   | { kind: 'open-error' }
   | null;
 
@@ -60,6 +61,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const staleRef = useRef(false);
   /** another tab holds the draft: this view only follows what it commits */
   const readOnlyRef = useRef(false);
+  /** this tab handed the draft over and its final flush is still running: never follow meanwhile */
+  const handingOverRef = useRef(false);
+  /** the full text a stale tab handed back: Copy keeps exactly this, never a reloaded view */
+  const staleTextRef = useRef<string | null>(null);
+  /** schedule a follow (catch-up) of what the writing tab committed; set by the follower effect */
+  const followRef = useRef<() => void>(() => {});
   const leaveRef = useRef<LeaveGuard>(async (go) => (go(), true));
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -69,6 +76,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     let disposed = false;
     staleRef.current = false;
     readOnlyRef.current = false;
+    handingOverRef.current = false;
+    staleTextRef.current = null;
     const host = hostRef.current!;
     let commitTimer: ReturnType<typeof setTimeout> | null = null;
     let lastCommit: DraftRecord | null = null;
@@ -92,16 +101,25 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       const events = {
         onStale: (text: string) => {
           staleRef.current = true;
+          handingOverRef.current = false;
+          if (writerRef.current) {
+            // still the writer: the view is what was typed (never behind the writer), keep it
+            staleTextRef.current = view.state.doc.toString();
+          } else {
+            // handed over: a follow may have replaced the view with partly saved text; show what is handed back
+            staleTextRef.current = text;
+            loadText(view, text);
+          }
           writerRef.current = null;
           setReadOnly(view, true);
           setChromeVisible(true);
-          setNotice({ kind: 'stale', text });
+          setNotice({ kind: 'stale', text: staleTextRef.current });
         },
         onCommit: (rec: DraftRecord) => {
           setTitle(rec.meta.title);
           // a later save caught up: the "not saved" warning no longer applies
           if (!staleRef.current && !writerRef.current?.dirty) setNotice((n) => (n?.kind === 'unsaved-leave' ? null : n));
-          broadcast({ type: 'committed', draftId });
+          broadcast({ type: 'committed', draftId, record: rec });
           lastCommit = rec;
           if (commitTimer) return;
           commitTimer = setTimeout(() => {
@@ -134,26 +152,40 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
               // the editor normalized the text (e.g. \r line breaks): recording would desync from the
               // log, so offer the same repair as a damaged history (rebase on the text as shown)
               void sessionRef.current?.dispose();
-              setNotice({ kind: 'damaged', text: view.state.doc.toString() });
+              setNotice({ kind: 'damaged', text: view.state.doc.toString(), head: w.head, epoch: w.draft.epoch });
               return;
             }
             writerRef.current = w;
             readOnlyRef.current = false;
+            handingOverRef.current = false;
             setReadOnly(view, false);
             setNotice((n) => (n?.kind === 'readonly' ? null : n));
             view.focus();
           },
           onReadOnly: (reason, error) => {
             writerRef.current = null;
-            readOnlyRef.current = reason !== 'error';
+            // after a handover the final flush is still running: follow only once onHandedOver says
+            // storage holds everything (a failed flush sends onStale instead)
+            readOnlyRef.current = reason === 'other-tab' || reason === 'stolen';
+            handingOverRef.current = reason === 'handed-over';
             setReadOnly(view, true);
             setChromeVisible(true);
             if (reason === 'error') {
               // never replace a stale notice: it guards unsaved words still in the editor
               setNotice((n) =>
-                staleRef.current ? n : error instanceof DamagedDraftError ? { kind: 'damaged', text: error.text } : { kind: 'open-error' },
+                staleRef.current
+                  ? n
+                  : error instanceof DamagedDraftError
+                    ? { kind: 'damaged', text: error.text, head: error.head, epoch: error.epoch }
+                    : { kind: 'open-error' },
               );
             } else setNotice((n) => (staleRef.current ? n : { kind: 'readonly' }));
+          },
+          onHandedOver: () => {
+            if (!handingOverRef.current || staleRef.current) return;
+            handingOverRef.current = false;
+            readOnlyRef.current = true;
+            followRef.current(); // catch up with anything the new holder already committed
           },
         },
         async (w, now) => (await storage.clearHistory(draftId, w.savedText, now, w.head, w.draft.epoch)).ok,
@@ -182,27 +214,49 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   useEffect(() => {
     const bc = channel();
     let timer: ReturnType<typeof setTimeout> | null = null;
+    /** a commit arrived while the page was hidden: catch up once it is visible again */
+    let behind = false;
     // only a read-only tab follows (this tab's own commits arrive here too, via the store's channel);
-    // a stale view holds words storage doesn't, so it is never replaced
-    const following = () => readOnlyRef.current && !writerRef.current && !staleRef.current;
+    // a stale view holds words storage doesn't, so it is never replaced; nor while a handover flushes
+    const following = () => readOnlyRef.current && !writerRef.current && !staleRef.current && !handingOverRef.current;
     const follow = async () => {
       timer = null;
       const loaded = await storage.loadDraft(draftId).catch(() => undefined);
       const view = viewRef.current;
       if (!following() || loaded === undefined || !view) return;
       if (loaded === null) return onDeleted(); // deleted in the tab that held it
-      // what this tab shows (and Copy keeps) isn't left behind the writing tab
-      loadText(view, loaded.text);
+      // what this tab shows isn't left behind the writing tab; the reader's caret and scroll stay put
+      followText(view, loaded.text);
       setTitle(loaded.record.meta.title);
     };
+    const schedule = () => {
+      if (!following()) return;
+      if (document.visibilityState === 'hidden') {
+        behind = true;
+        return;
+      }
+      // the writing tab commits every BATCH_MS while typing: coalesce
+      timer ??= setTimeout(() => void follow(), FOLLOW_COALESCE_MS);
+    };
+    followRef.current = schedule;
+    const onVisible = () => {
+      if (document.visibilityState !== 'visible' || !behind) return;
+      behind = false;
+      schedule();
+    };
     const onMsg = (e: MessageEvent<ChannelMessage>) => {
-      if (e.data?.type !== 'committed' || e.data.draftId !== draftId || timer || !following()) return;
-      timer = setTimeout(() => void follow(), 300); // the writing tab commits every ~500 ms: coalesce
+      const m = e.data;
+      if (m?.type === 'committed' && m.draftId === draftId) schedule();
+      // deleted in the tab that held it: move on (never while this tab's own words are at stake)
+      else if (m?.type === 'deleted' && m.draftId === draftId && following()) onDeleted();
     };
     bc?.addEventListener('message', onMsg);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       if (timer) clearTimeout(timer);
+      followRef.current = () => {};
       bc?.removeEventListener('message', onMsg);
+      document.removeEventListener('visibilitychange', onVisible);
       bc?.close();
     };
   }, [storage, draftId, onDeleted]);
@@ -291,7 +345,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         if (r?.added) {
           void refreshDrafts();
           void requestPersistence();
-          broadcast({ type: 'committed', draftId }); // other tabs reread their draft lists
+          broadcast({ type: 'library' }); // other tabs reread their draft lists
         }
         return r?.label ?? null;
       },
@@ -315,7 +369,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           setMountKey((k) => k + 1); // reopen and keep writing; nothing was lost
           return 'Couldn’t delete. Try again';
         }
-        broadcast({ type: 'committed', draftId }); // a tab showing it read-only finds it gone and moves on
+        broadcast({ type: 'deleted', draftId }); // a tab showing it read-only moves on
         setPalette(false);
         onDeleted();
         return null;
@@ -324,7 +378,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         const now = Date.now();
         await storage.resetDay(dayKey(now, new Date(now).getTimezoneOffset()));
         await refreshToday();
-        broadcast({ type: 'committed', draftId });
+        broadcast({ type: 'library' }); // other tabs reread words today
       },
     }),
     [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
@@ -362,8 +416,29 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
   }, []);
 
+  /**
+   * "Keep the readable text": rebase the draft on the text read when the damage was found. The
+   * head + epoch from then make storage refuse if the draft changed since, and the draft's lock
+   * (when Web Locks exist) keeps a tab that holds it from being rewritten underneath.
+   */
+  const repairDamaged = async (d: { text: string; head: number; epoch: string }) => {
+    const rebase = () => storage.clearHistory(draftId, d.text, Date.now(), d.head, d.epoch);
+    const locks = typeof navigator !== 'undefined' ? (navigator.locks as LockManager | undefined) : undefined;
+    try {
+      // no lock (another tab owns the draft) or a refused check (it changed since): nothing is
+      // written; the remount below shows what storage holds (read-only, or damaged with a fresh head)
+      if (locks) await locks.request(`draft:${draftId}`, { ifAvailable: true }, async (lock) => lock && (await rebase()));
+      else await rebase();
+    } catch {
+      return setNotice({ kind: 'open-error' });
+    }
+    setNotice(null);
+    setMountKey((k) => k + 1);
+  };
+
   const copyUnsaved = async () => {
-    const text = currentText();
+    // a stale tab copies exactly the text it handed back
+    const text = staleRef.current && staleTextRef.current !== null ? staleTextRef.current : currentText();
     try {
       await navigator.clipboard.writeText(text);
       setCopyLabel('Copied');
@@ -490,8 +565,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             <div style={{ width: `${pct}%` }} />
           </div>
         )}
-        {!notice && updateReady && !staleRef.current && !writerRef.current?.dirty && (
-          // lowest priority (R11): a new version waits; only this click reloads, and only with nothing unsaved
+        {!notice && updateReady && !staleRef.current && (
+          // lowest priority (R11): a new version waits; only this click reloads. Once shown it stays
+          // (no flicker while typing): leave() still keeps unsaved words from being reloaded away
           <div className="notice" role="status">
             <span>Update ready</span>
             <button type="button" className="text-btn" onClick={() => void leave(applyUpdate)}>
@@ -529,7 +605,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
                   onClick={() => {
                     pendingLeave.current = null;
                     // back to the notice that was there: still stale, or just retrying saves
-                    setNotice(staleRef.current ? { kind: 'stale', text: currentText() } : null);
+                    setNotice(staleRef.current ? { kind: 'stale', text: staleTextRef.current ?? currentText() } : null);
                   }}
                 >
                   Stay
@@ -553,22 +629,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             {notice.kind === 'damaged' && (
               <>
                 <span>Part of this draft’s history is damaged.</span>
-                <button
-                  type="button"
-                  className="text-btn"
-                  onClick={async () => {
-                    try {
-                      const loaded = await storage.loadDraft(draftId);
-                      const r =
-                        loaded && (await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch));
-                      if (!r || !r.ok) return setNotice({ kind: 'open-error' });
-                    } catch {
-                      return setNotice({ kind: 'open-error' });
-                    }
-                    setNotice(null);
-                    setMountKey((k) => k + 1);
-                  }}
-                >
+                <button type="button" className="text-btn" onClick={() => void repairDamaged(notice)}>
                   Keep the readable text
                 </button>
               </>

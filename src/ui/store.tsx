@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { IndexedDbAdapter } from '../storage/idb';
-import { channel, type ChannelMessage } from '../storage/lifecycle';
+import { channel, FOLLOW_COALESCE_MS, type ChannelMessage } from '../storage/lifecycle';
 import { dayKey, wordsToday } from '../core/words';
 import type { DraftRecord } from '../core/draft';
 import type { StorageAdapter } from '../core/storage';
@@ -76,8 +76,12 @@ export function StoreProvider({
     });
     bc.current = channel();
     let refresh: ReturnType<typeof setTimeout> | null = null;
+    /** committed rows waiting for the timer; a full reread (released, deleted, library) supersedes them */
+    const committed = new Map<string, DraftRecord>();
+    let full = false;
     const onMsg = (e: MessageEvent<ChannelMessage>) => {
-      if (e.data?.type === 'settings') {
+      const m = e.data;
+      if (m?.type === 'settings') {
         void storage.getSetting<unknown>('settings').then((v) => {
           const next = sanitizeSettings(v);
           setSettings(next);
@@ -85,13 +89,19 @@ export function StoreProvider({
         });
         return;
       }
-      if (e.data?.type !== 'committed' && e.data?.type !== 'released') return;
-      if (refresh) return; // another tab commits every ~500 ms while typing: coalesce
+      if (m?.type === 'committed') committed.set(m.draftId, m.record);
+      else if (m?.type === 'released' || m?.type === 'deleted' || m?.type === 'library') full = true;
+      else return;
+      if (refresh) return; // another tab commits every BATCH_MS while typing: coalesce
       refresh = setTimeout(() => {
         refresh = null;
         void refreshToday();
-        void refreshDrafts();
-      }, 300);
+        // while someone types, only their draft's row changes: upsert it instead of rereading every draft
+        if (full) void refreshDrafts();
+        else committed.forEach((r) => upsertDraft(r));
+        committed.clear();
+        full = false;
+      }, FOLLOW_COALESCE_MS);
     };
     bc.current?.addEventListener('message', onMsg);
     const mq = matchMedia('(prefers-color-scheme: dark)');
@@ -106,7 +116,7 @@ export function StoreProvider({
       mq.removeEventListener('change', onScheme);
       clearInterval(midnight);
     };
-  }, [refreshDrafts, refreshToday, onReady, onBootError]);
+  }, [refreshDrafts, upsertDraft, refreshToday, onReady, onBootError]);
 
   const update = useCallback((patch: Partial<Settings>) => {
     setSettings((s) => {

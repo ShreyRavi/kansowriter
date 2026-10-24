@@ -7,7 +7,8 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      // R11: a new service worker waits until no Kansowriter tab is open; it never reloads an open page.
+      // R11: a new service worker waits; it activates only when the user clicks Reload (src/ui/updates.ts)
+      // or when no tab is open; it never reloads a page on its own.
       registerType: 'prompt',
       // OV10: the app registers the worker itself (src/ui/updates.ts, bundled), never an inline
       // script (strict CSP); it offers a quiet "Update ready · Reload" and reloads only on that click.

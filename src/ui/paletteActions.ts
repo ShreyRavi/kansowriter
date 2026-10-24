@@ -2,7 +2,7 @@
 export interface PaletteActions {
   newDraft(): void;
   openDrafts(): void;
-  /** resolves to a label when the draft can't be renamed in this tab */
+  /** a label when the draft can't be renamed in this tab; null when renamed */
   rename(title: string): string | null;
   exportMarkdown(): Promise<string>;
   exportText(): Promise<string>;

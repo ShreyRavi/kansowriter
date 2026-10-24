@@ -10,7 +10,6 @@ import type { PaletteActions } from './paletteActions';
 
 const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Light', night: 'Dark' };
 type Expandable = 'theme' | 'typeface' | 'hide';
-const EXPANDABLE: readonly string[] = ['theme', 'typeface', 'hide'] satisfies Expandable[];
 const mod = () => (isMac() ? '⌘' : 'Ctrl ');
 type NumKey = 'textSize' | 'lineWidth' | 'goal';
 
@@ -123,9 +122,7 @@ export function CommandPalette({
             else if (e.key === 'Escape') cancelEdit();
             else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
               e.preventDefault();
-              const n = clamp(Number(draftValue) + (e.key === 'ArrowRight' ? 1 : -1) * LIMITS[key].step, LIMITS[key]);
-              setDraftValue(String(n));
-              update({ [key]: n } as Partial<Settings>); // live preview behind the palette
+              step(key, e.key === 'ArrowRight' ? 1 : -1); // live preview behind the palette
             }
           }}
           onBlur={commitEdit}
@@ -146,12 +143,13 @@ export function CommandPalette({
           loop
           shouldFilter={!editing && !confirm && !expanded}
           onKeyDown={(e: ReactKeyboardEvent) => {
-            // → on a choice row expands its options (19A); only when the search caret is at the end
+            // → on a choice row expands its options (19A); only when the search caret is at the end.
+            // only the three choice rows carry data-expand
             if (e.key !== 'ArrowRight' || editing || expanded || confirm) return;
             const input = inputRef.current;
             if (input && document.activeElement === input && input.selectionStart !== input.value.length) return;
             const row = ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-expand');
-            if (row && EXPANDABLE.includes(row)) {
+            if (row) {
               e.preventDefault();
               setExpanded(row as Expandable);
             }

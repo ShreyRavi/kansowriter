@@ -89,7 +89,7 @@ function Router({ initial }: { initial: DraftRecord[] }) {
     const list = await refreshDrafts();
     void requestPersistence();
     if (list[0]) {
-      broadcast({ type: 'committed', draftId: list[0].id }); // other tabs' draft lists
+      broadcast({ type: 'library' }); // other tabs' draft lists
       openDraft(list[0].id);
     }
   }, [refreshDrafts, broadcast, openDraft]);
