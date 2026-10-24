@@ -13,7 +13,7 @@ export default defineConfig({
       workbox: {
         skipWaiting: false,
         clientsClaim: false,
-        globPatterns: ['**/*.{js,css,html,woff2,svg,png,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,woff2,svg,png,ico,webmanifest}'],
         navigateFallback: '/index.html',
       },
       manifest: {
@@ -27,7 +27,9 @@ export default defineConfig({
         icons: [
           { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
-          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any maskable' },
+          { src: '/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+          // full-bleed with a safe zone, so Android's circle/squircle crop never cuts the marks
+          { src: '/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
     }),

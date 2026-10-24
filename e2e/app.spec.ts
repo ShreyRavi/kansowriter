@@ -19,6 +19,19 @@ test.describe('first visit and writing', () => {
     expect(offOrigin).toEqual([]);
   });
 
+  test('favicon, apple-touch icon and every manifest icon resolve as images', async ({ page, request }) => {
+    await page.goto('/about');
+    const hrefs = await page.$$eval('link[rel~="icon"], link[rel="apple-touch-icon"]', (ls) => ls.map((l) => (l as HTMLLinkElement).getAttribute('href')!));
+    const manifest = await (await request.get(await page.$eval('link[rel="manifest"]', (l) => (l as HTMLLinkElement).href))).json();
+    const all = [...hrefs, ...manifest.icons.map((i: { src: string }) => i.src)];
+    expect(all).toEqual(expect.arrayContaining(['/favicon.ico', '/favicon.svg', '/apple-touch-icon.png', '/icon-maskable-512.png']));
+    for (const href of all) {
+      const r = await request.get(href);
+      expect(r.status(), href).toBe(200);
+      expect(r.headers()['content-type'], href).toMatch(/^image\//);
+    }
+  });
+
   test('type, reload: the draft persists and "/" reopens it (R26)', async ({ page }) => {
     const editor = await startWriting(page);
     await write(page, editor, '# On silence\n\nA few minutes into writing.');
