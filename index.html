@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en" data-theme="paper">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Kansowriter — a quiet place to write</title>
+    <meta name="description" content="A quiet place to write. Drafts stay on your device. No account." />
+    <meta name="theme-color" content="#F5F0E6" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icon-512.png" />
+    <link rel="preload" href="/fonts/newsreader-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/instrument-sans-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- theme bootstrap (21A): pick paper/night before first paint; allowed by CSP via its sha256 hash -->
+    <script>try{var t=localStorage.getItem('kansowriter-theme');document.documentElement.dataset.theme=t==='night'||t==='paper'?t:(matchMedia('(prefers-color-scheme: dark)').matches?'night':'paper')}catch(e){}</script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

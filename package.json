@@ -12,7 +12,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "lint": "eslint .",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "csp:check": "tsx scripts/check-csp.ts",
+    "icons": "tsx scripts/gen-icons.ts"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
