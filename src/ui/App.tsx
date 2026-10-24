@@ -32,24 +32,32 @@ function Router({ initial }: { initial: DraftRecord[] }) {
     setRoute({ name: 'editor', draftId });
   }, []);
 
-  const createDraft = useCallback(async (title?: string) => {
-    const now = Date.now();
-    const rec = newDraft(crypto.randomUUID(), now);
-    await storage.createDraft(rec);
-    if (title) {
-      // "New draft titled …" (5A): the title is the draft's first recorded op
-      const text = `# ${title}\n\n`;
-      await storage.append({
-        draftId: rec.id, baseHead: 0, baseEpoch: rec.epoch, ops: [[0, 0, text]],
-        newSession: { opIndex: 0, at: now, tzOffset: new Date(now).getTimezoneOffset() },
-        meta: deriveMeta(text), updatedAt: now,
-        dayDeltas: [{ key: dayKey(now, new Date(now).getTimezoneOffset()), delta: countWords(text) }], snapshots: [],
-      });
-    }
-    await refreshDrafts();
-    void requestPersistence();
-    openDraft(rec.id);
-  }, [storage, refreshDrafts, openDraft]);
+  const createDraft = useCallback(
+    async (title?: string) => {
+      const now = Date.now();
+      const rec = newDraft(crypto.randomUUID(), now);
+      await storage.createDraft(rec);
+      if (title) {
+        // "New draft titled …" (5A): the title is the draft's first recorded op
+        const text = `# ${title}\n\n`;
+        await storage.append({
+          draftId: rec.id,
+          baseHead: 0,
+          baseEpoch: rec.epoch,
+          ops: [[0, 0, text]],
+          newSession: { opIndex: 0, at: now, tzOffset: new Date(now).getTimezoneOffset() },
+          meta: deriveMeta(text),
+          updatedAt: now,
+          dayDeltas: [{ key: dayKey(now, new Date(now).getTimezoneOffset()), delta: countWords(text) }],
+          snapshots: [],
+        });
+      }
+      await refreshDrafts();
+      void requestPersistence();
+      openDraft(rec.id);
+    },
+    [storage, refreshDrafts, openDraft],
+  );
 
   const afterDelete = useCallback(async () => {
     const list = await refreshDrafts();

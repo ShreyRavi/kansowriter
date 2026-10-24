@@ -52,7 +52,8 @@ function build(view: EditorView): DecorationSet {
         else if (name === 'StrongEmphasis') items.push({ from: node.from, to: node.to, deco: mark('cm-strong') });
         else if (name === 'InlineCode') items.push({ from: node.from, to: node.to, deco: mark('cm-code') });
         else if (name === 'Link') items.push({ from: node.from, to: node.to, deco: mark('cm-link') });
-        else if (name === 'Image') return false; // literal text, never rendered (R6)
+        else if (name === 'Image')
+          return false; // literal text, never rendered (R6)
         else if (name === 'URL' && node.node.parent?.name === 'Link' && !onActive) {
           items.push({ from: node.from, to: node.to, deco: hide });
         } else if (MARKS.has(name) && !onActive) {

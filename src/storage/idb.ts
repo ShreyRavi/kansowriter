@@ -110,12 +110,7 @@ export class IndexedDbAdapter implements StorageAdapter {
   }
 
   private async latestSnapshot(id: string, head: number): Promise<Snapshot | null> {
-    const rows = await this.db.snapshots
-      .where('[draftId+opIndex]')
-      .between([id, 0], [id, head], true, true)
-      .reverse()
-      .limit(1)
-      .toArray();
+    const rows = await this.db.snapshots.where('[draftId+opIndex]').between([id, 0], [id, head], true, true).reverse().limit(1).toArray();
     const r = rows[0];
     return r ? { opIndex: r.opIndex, text: r.text } : null;
   }
@@ -200,7 +195,8 @@ export class IndexedDbAdapter implements StorageAdapter {
       const ops = new Map<string, Op[]>();
       for (const r of opRows) (ops.get(r.draftId) ?? ops.set(r.draftId, []).get(r.draftId)!).push(r.op);
       const snaps = new Map<string, Snapshot[]>();
-      for (const r of snapRows) (snaps.get(r.draftId) ?? snaps.set(r.draftId, []).get(r.draftId)!).push({ opIndex: r.opIndex, text: r.text });
+      for (const r of snapRows)
+        (snaps.get(r.draftId) ?? snaps.set(r.draftId, []).get(r.draftId)!).push({ opIndex: r.opIndex, text: r.text });
       // only the base snapshot travels: the importer rebuilds the rest, keeping backups small
       const drafts = records.map((record) => ({
         record,

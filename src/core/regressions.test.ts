@@ -70,7 +70,13 @@ describe('regressions (Checkpoint A review)', () => {
         return { ok: true as const, head: b.baseHead + b.ops.length };
       },
     } as unknown as StorageAdapter;
-    const w = new DraftWriter(storage, newDraft('d', 0), '', { onStale: () => {}, onCommit: () => {}, onError: (e) => errors.push(e) }, () => 0);
+    const w = new DraftWriter(
+      storage,
+      newDraft('d', 0),
+      '',
+      { onStale: () => {}, onCommit: () => {}, onError: (e) => errors.push(e) },
+      () => 0,
+    );
     w.push({ runs: ['x'], at: 0, kind: 'other' });
     await w.flush(false, 100); // fails, retryAt = 1100
     expect(calls).toBe(1);

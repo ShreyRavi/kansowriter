@@ -36,7 +36,14 @@ function mount(doc: string, cursor: number) {
   const changes: Change[] = [];
   const parent = document.createElement('div');
   document.body.appendChild(parent);
-  const view = createEditor(parent, { doc, onChange: (c) => changes.push(c), onActivity: () => {}, focus: 'paragraph', typewriter: false, readOnly: false });
+  const view = createEditor(parent, {
+    doc,
+    onChange: (c) => changes.push(c),
+    onActivity: () => {},
+    focus: 'paragraph',
+    typewriter: false,
+    readOnly: false,
+  });
   view.dispatch({ selection: { anchor: cursor } });
   return { view, changes, parent };
 }
@@ -52,7 +59,8 @@ describe('hybrid markdown (R6, text-only)', () => {
   });
 
   it('letter-style hostile content never creates img, iframe or anchor elements', () => {
-    const doc = '![x](https://example.com/p.png)\n\n<img src="https://example.com/a.png">\n<iframe src="https://example.com"></iframe>\n[link](https://example.com)\n\nend';
+    const doc =
+      '![x](https://example.com/p.png)\n\n<img src="https://example.com/a.png">\n<iframe src="https://example.com"></iframe>\n[link](https://example.com)\n\nend';
     const { parent } = mount(doc, doc.length);
     expect(parent.querySelectorAll('img, iframe, a, object, embed, video, audio, link').length).toBe(0);
   });
@@ -96,7 +104,12 @@ describe('loadText', () => {
     const { undo } = await import('@codemirror/commands');
     const changes: Change[] = [];
     const view = createEditor(document.createElement('div'), {
-      doc: 'old', onChange: (c) => changes.push(c), onActivity: () => {}, focus: 'off', typewriter: false, readOnly: false,
+      doc: 'old',
+      onChange: (c) => changes.push(c),
+      onActivity: () => {},
+      focus: 'off',
+      typewriter: false,
+      readOnly: false,
     });
     loadText(view, 'loaded from storage');
     expect(changes).toHaveLength(0);

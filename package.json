@@ -14,7 +14,9 @@
     "test": "vitest run",
     "e2e": "playwright test",
     "csp:check": "tsx scripts/check-csp.ts",
-    "icons": "tsx scripts/gen-icons.ts"
+    "icons": "tsx scripts/gen-icons.ts",
+    "format": "prettier --write .",
+    "format:check": "prettier --check ."
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",
@@ -41,6 +43,7 @@
     "fast-check": "^4.10.2",
     "globals": "^17.13.0",
     "jsdom": "^30.1.3",
+    "prettier": "^3.6.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.72.0",

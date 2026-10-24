@@ -23,16 +23,13 @@ class FakeLocks {
     return new Promise((resolve, reject) => {
       const entry = { reject };
       this.held.set(name, entry);
-      Promise.resolve(cb({ name, mode: 'exclusive' } as Lock)).then(
-        (v) => {
-          if (this.held.get(name) === entry) {
-            this.held.delete(name);
-            this.queue.get(name)?.shift()?.();
-          }
-          resolve(v);
-        },
-        reject,
-      );
+      Promise.resolve(cb({ name, mode: 'exclusive' } as Lock)).then((v) => {
+        if (this.held.get(name) === entry) {
+          this.held.delete(name);
+          this.queue.get(name)?.shift()?.();
+        }
+        resolve(v);
+      }, reject);
     });
   }
 }
@@ -214,7 +211,10 @@ describe('attachDraftSession (single writer, R23)', () => {
       const loaded = (await db.loadDraft('d1'))!;
       return new DraftWriter(db, loaded.record, loaded.text, { onStale: () => {}, onCommit: () => {} });
     };
-    const a = attachDraftSession('d1', openSlow, { onWritable: () => log.push('a:writable'), onReadOnly: (r) => log.push(`a:readonly:${r}`) });
+    const a = attachDraftSession('d1', openSlow, {
+      onWritable: () => log.push('a:writable'),
+      onReadOnly: (r) => log.push(`a:readonly:${r}`),
+    });
     sessions.push(a);
     const b = open('b', log);
     await until(() => log.includes('b:readonly:other-tab'));
@@ -232,8 +232,11 @@ describe('attachDraftSession (single writer, R23)', () => {
       const loaded = (await db.loadDraft('d1'))!;
       return new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => log.push(`stale:${t}`), onCommit: () => {} });
     };
-    const s = attachDraftSession('d1', openW, { onWritable: () => log.push('writable'), onReadOnly: () => {} }, async (w, now) =>
-      (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok,
+    const s = attachDraftSession(
+      'd1',
+      openW,
+      { onWritable: () => log.push('writable'), onReadOnly: () => {} },
+      async (w, now) => (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok,
     );
     sessions.push(s);
     await until(() => s.writer !== null);
@@ -293,8 +296,7 @@ describe('attachDraftSession (single writer, R23)', () => {
     const w = s.writer!;
     const realFlush = w.flush.bind(w);
     const waiting: (() => void)[] = [];
-    w.flush = (closePending?: boolean, now?: number) =>
-      new Promise<void>((r) => waiting.push(r)).then(() => realFlush(closePending, now));
+    w.flush = (closePending?: boolean, now?: number) => new Promise<void>((r) => waiting.push(r)).then(() => realFlush(closePending, now));
     const p = s.clearHistory();
     const b = open('b', log);
     await until(() => log.includes('b:readonly:other-tab'));
@@ -362,8 +364,11 @@ describe('attachDraftSession (single writer, R23)', () => {
       const loaded = (await db.loadDraft('d1'))!;
       return new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => log.push(`stale:${t}`), onCommit: () => {} });
     };
-    const s = attachDraftSession('d1', openW, { onWritable: () => log.push('writable'), onReadOnly: (r) => log.push(`readonly:${r}`) }, async (w, now) =>
-      (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok,
+    const s = attachDraftSession(
+      'd1',
+      openW,
+      { onWritable: () => log.push('writable'), onReadOnly: (r) => log.push(`readonly:${r}`) },
+      async (w, now) => (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok,
     );
     sessions.push(s);
     await until(() => s.writer !== null);

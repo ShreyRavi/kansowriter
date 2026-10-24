@@ -40,7 +40,9 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
   const list = useMemo(
     () =>
       needle
-        ? drafts.filter((d) => d.meta.title.toLowerCase().includes(needle) || (bodies.get(d.id) ?? d.meta.excerpt).toLowerCase().includes(needle))
+        ? drafts.filter(
+            (d) => d.meta.title.toLowerCase().includes(needle) || (bodies.get(d.id) ?? d.meta.excerpt).toLowerCase().includes(needle),
+          )
         : drafts,
     [drafts, needle, bodies],
   );
@@ -81,7 +83,15 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
             Search drafts
           </label>
           <SearchIcon />
-          <input ref={searchRef} id="draft-search" type="search" placeholder="Search drafts" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" />
+          <input
+            ref={searchRef}
+            id="draft-search"
+            type="search"
+            placeholder="Search drafts"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            autoComplete="off"
+          />
           {q && (
             <button type="button" className="icon-btn clear" aria-label="Clear search" onClick={() => setQ('')}>
               <CloseIcon />

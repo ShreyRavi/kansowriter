@@ -41,32 +41,32 @@ const arbDoc = fc.string({ maxLength: 30 });
 
 function arbRuns(len: number): fc.Arbitrary<Run[]> {
   // random edit over a document of length `len`
-  return fc
-    .array(fc.tuple(fc.integer({ min: 0, max: 3 }), fc.string({ minLength: 1, maxLength: 4 })), { maxLength: 6 })
-    .map((steps) => {
-      const runs: Run[] = [];
-      let left = len;
-      for (const [kind, s] of steps) {
-        if (kind === 0) runs.push(s);
-        else if (left > 0) {
-          const n = 1 + (s.charCodeAt(0) % left);
-          runs.push(kind === 1 ? -n : n);
-          left -= n;
-        }
+  return fc.array(fc.tuple(fc.integer({ min: 0, max: 3 }), fc.string({ minLength: 1, maxLength: 4 })), { maxLength: 6 }).map((steps) => {
+    const runs: Run[] = [];
+    let left = len;
+    for (const [kind, s] of steps) {
+      if (kind === 0) runs.push(s);
+      else if (left > 0) {
+        const n = 1 + (s.charCodeAt(0) % left);
+        runs.push(kind === 1 ? -n : n);
+        left -= n;
       }
-      if (left > 0) runs.push(left);
-      return normalize(runs);
-    });
+    }
+    if (left > 0) runs.push(left);
+    return normalize(runs);
+  });
 }
 
 describe('compose', () => {
   it('apply(apply(d, a), b) === apply(d, compose(a, b))', () => {
     fc.assert(
       fc.property(
-        arbDoc.chain((d) => arbRuns(d.length).chain((a) => {
-          const mid = apply(d, [0, 0, ...a]);
-          return arbRuns(mid.length).map((b) => ({ d, a, b, mid }));
-        })),
+        arbDoc.chain((d) =>
+          arbRuns(d.length).chain((a) => {
+            const mid = apply(d, [0, 0, ...a]);
+            return arbRuns(mid.length).map((b) => ({ d, a, b, mid }));
+          }),
+        ),
         ({ d, a, b, mid }) => {
           const direct = apply(mid, [0, 0, ...b]);
           expect(apply(d, [0, 0, ...compose(a, b)])).toBe(direct);

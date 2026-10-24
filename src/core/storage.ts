@@ -53,7 +53,13 @@ export interface StorageAdapter {
    * R9: keep text, drop history; today's words-today value is untouched (R20).
    * Rejected unless head and epoch still match what the caller loaded.
    */
-  clearHistory(id: string, text: string, now: number, baseHead: number, baseEpoch: string): Promise<{ ok: true; record: DraftRecord } | { ok: false }>;
+  clearHistory(
+    id: string,
+    text: string,
+    now: number,
+    baseHead: number,
+    baseEpoch: string,
+  ): Promise<{ ok: true; record: DraftRecord } | { ok: false }>;
   getDay(key: string): Promise<Day | undefined>;
   resetDay(key: string): Promise<Day>;
   exportAll(): Promise<BackupData>;

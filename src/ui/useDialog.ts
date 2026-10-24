@@ -20,7 +20,9 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
         return;
       }
       if (e.key !== 'Tab' || !ref.current) return;
-      const items = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+      const items = [...ref.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
       if (!items.length) return;
       const first = items[0]!;
       const last = items[items.length - 1]!;

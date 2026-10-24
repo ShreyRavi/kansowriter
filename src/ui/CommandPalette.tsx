@@ -31,7 +31,17 @@ type NumKey = 'textSize' | 'lineWidth' | 'goal';
  * toggles flip on Enter, choices cycle on Enter or expand on →, numbers become an inline field;
  * destructive commands confirm inside their row (8A); results show in place (9A).
  */
-export function CommandPalette({ onClose, actions, title, wordsToday }: { onClose(): void; actions: PaletteActions; title: string; wordsToday: number }) {
+export function CommandPalette({
+  onClose,
+  actions,
+  title,
+  wordsToday,
+}: {
+  onClose(): void;
+  actions: PaletteActions;
+  title: string;
+  wordsToday: number;
+}) {
   const { settings, update } = useStore();
   const ref = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -50,7 +60,11 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
     clearTimeout(timers.current.get(key));
     if (!text) return setLabels((l) => ({ ...l, [key]: '' }));
     setLabels((l) => ({ ...l, [key]: text }));
-    if (!hold) timers.current.set(key, setTimeout(() => setLabels((l) => ({ ...l, [key]: '' })), 2500));
+    if (!hold)
+      timers.current.set(
+        key,
+        setTimeout(() => setLabels((l) => ({ ...l, [key]: '' })), 2500),
+      );
   };
   const run = (key: string, pending: string, f: () => Promise<string | null>) => {
     flash(key, pending, true);
@@ -66,7 +80,8 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
     if (editing === 'rename') actions.rename(draftValue);
     else if (editing) {
       const n = Number(draftValue);
-      if (Number.isFinite(n)) update({ [editing]: clamp(Math.round(n / LIMITS[editing].step) * LIMITS[editing].step, LIMITS[editing]) } as Partial<Settings>);
+      if (Number.isFinite(n))
+        update({ [editing]: clamp(Math.round(n / LIMITS[editing].step) * LIMITS[editing].step, LIMITS[editing]) } as Partial<Settings>);
     }
     setEditing(null);
     backToSearch();
@@ -97,7 +112,9 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
   const numField = (key: NumKey, unit = '') =>
     editing === key ? (
       <span className="val" data-local-escape onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="icon-btn stepper" aria-label="Decrease" onMouseDown={keepFocus} onClick={() => step(key, -1)}>−</button>
+        <button type="button" className="icon-btn stepper" aria-label="Decrease" onMouseDown={keepFocus} onClick={() => step(key, -1)}>
+          −
+        </button>
         <input
           autoFocus
           inputMode="numeric"
@@ -117,7 +134,9 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
           }}
           onBlur={commitEdit}
         />
-        <button type="button" className="icon-btn stepper" aria-label="Increase" onMouseDown={keepFocus} onClick={() => step(key, 1)}>+</button>
+        <button type="button" className="icon-btn stepper" aria-label="Increase" onMouseDown={keepFocus} onClick={() => step(key, 1)}>
+          +
+        </button>
       </span>
     ) : (
       <Val value={`${settings[key]}${unit}`} />
@@ -136,7 +155,11 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
             const input = inputRef.current;
             if (input && document.activeElement === input && input.selectionStart !== input.value.length) return;
             const v = (ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-value') ?? '').toLowerCase();
-            const rows: Record<string, 'theme' | 'typeface' | 'hide'> = { theme: 'theme', typeface: 'typeface', 'hide interface when typing': 'hide' };
+            const rows: Record<string, 'theme' | 'typeface' | 'hide'> = {
+              theme: 'theme',
+              typeface: 'typeface',
+              'hide interface when typing': 'hide',
+            };
             if (rows[v]) {
               e.preventDefault();
               setExpanded(rows[v]);
@@ -214,9 +237,24 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
             </Command.Group>
 
             <Command.Group heading="Focus">
-              <Item label="Typewriter scrolling" value={onOff(settings.typewriter)} kbd={`${mod()}⇧T`} onSelect={() => update({ typewriter: !settings.typewriter })} />
-              <Item label="Dim other paragraphs" value={onOff(settings.focus === 'paragraph')} kbd={`${mod()}⇧P`} onSelect={() => setFocus('paragraph')} />
-              <Item label="Dim other sentences" value={onOff(settings.focus === 'sentence')} kbd={`${mod()}⇧S`} onSelect={() => setFocus('sentence')} />
+              <Item
+                label="Typewriter scrolling"
+                value={onOff(settings.typewriter)}
+                kbd={`${mod()}⇧T`}
+                onSelect={() => update({ typewriter: !settings.typewriter })}
+              />
+              <Item
+                label="Dim other paragraphs"
+                value={onOff(settings.focus === 'paragraph')}
+                kbd={`${mod()}⇧P`}
+                onSelect={() => setFocus('paragraph')}
+              />
+              <Item
+                label="Dim other sentences"
+                value={onOff(settings.focus === 'sentence')}
+                kbd={`${mod()}⇧S`}
+                onSelect={() => setFocus('sentence')}
+              />
               <Command.Item
                 value="Hide interface when typing"
                 onSelect={() => update({ hideChrome: hideCycle[(hideCycle.indexOf(settings.hideChrome) + 1) % hideCycle.length]! })}
@@ -247,8 +285,16 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                 {numField('goal')}
               </Command.Item>
               <Item label="Words today" value={`${wordsToday} of ${settings.goal}`} onSelect={() => {}} />
-              <Item label="Show progress line" value={onOff(settings.showProgress)} onSelect={() => update({ showProgress: !settings.showProgress })} />
-              <Item label="Reset today’s count" value={labels.reset ?? ''} onSelect={() => void actions.resetToday().then(() => flash('reset', 'Reset'))} />
+              <Item
+                label="Show progress line"
+                value={onOff(settings.showProgress)}
+                onSelect={() => update({ showProgress: !settings.showProgress })}
+              />
+              <Item
+                label="Reset today’s count"
+                value={labels.reset ?? ''}
+                onSelect={() => void actions.resetToday().then(() => flash('reset', 'Reset'))}
+              />
             </Command.Group>
 
             <Command.Group heading="Document">
@@ -275,8 +321,18 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                   <Val value="" />
                 )}
               </Command.Item>
-              <Item label="Export as Markdown" value={labels.md || '.md'} kbd={`${mod()}E`} onSelect={() => flash('md', actions.exportMarkdown())} />
-              <Item label="Export as plain text" value={labels.txt || '.txt'} kbd={`${mod()}⇧E`} onSelect={() => flash('txt', actions.exportText())} />
+              <Item
+                label="Export as Markdown"
+                value={labels.md || '.md'}
+                kbd={`${mod()}E`}
+                onSelect={() => flash('md', actions.exportMarkdown())}
+              />
+              <Item
+                label="Export as plain text"
+                value={labels.txt || '.txt'}
+                kbd={`${mod()}⇧E`}
+                onSelect={() => flash('txt', actions.exportText())}
+              />
               <Item label="Export all drafts" value={labels.all || ''} onSelect={() => run('all', 'Saving…', actions.exportAll)} />
               <Item label="Import backup" value={labels.imp || ''} onSelect={() => run('imp', 'Reading…', actions.importBackup)} />
               {confirm === 'clear' ? (
@@ -344,8 +400,21 @@ function Item({ label, value = '', kbd, onSelect }: { label: string; value?: str
   );
 }
 
-function Choices({ options, current, onPick, onClose }: { options: { id: string; label: string }[]; current: string; onPick(id: string): void; onClose(): void }) {
-  const at = Math.max(0, options.findIndex((o) => o.id === current));
+function Choices({
+  options,
+  current,
+  onPick,
+  onClose,
+}: {
+  options: { id: string; label: string }[];
+  current: string;
+  onPick(id: string): void;
+  onClose(): void;
+}) {
+  const at = Math.max(
+    0,
+    options.findIndex((o) => o.id === current),
+  );
   return (
     <div
       className="choices"
@@ -374,7 +443,19 @@ function Choices({ options, current, onPick, onClose }: { options: { id: string;
   );
 }
 
-function Confirm({ text, action, extra, onCancel, onConfirm }: { text: string; action: string; extra?: ReactNode; onCancel(): void; onConfirm(): void }) {
+function Confirm({
+  text,
+  action,
+  extra,
+  onCancel,
+  onConfirm,
+}: {
+  text: string;
+  action: string;
+  extra?: ReactNode;
+  onCancel(): void;
+  onConfirm(): void;
+}) {
   return (
     <div
       className="confirm"

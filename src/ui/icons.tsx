@@ -1,5 +1,14 @@
 // 18px, 1.5-stroke icons from the design canvas; decorative (aria-hidden), labels live on the buttons.
-const base = { width: 18, height: 18, viewBox: '0 0 18 18', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' as const, 'aria-hidden': true };
+const base = {
+  width: 18,
+  height: 18,
+  viewBox: '0 0 18 18',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.5,
+  strokeLinecap: 'round' as const,
+  'aria-hidden': true,
+};
 
 export const MenuIcon = () => (
   <svg {...base}>

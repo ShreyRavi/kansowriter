@@ -43,7 +43,16 @@ export function newEpoch(): string {
 }
 
 export function newDraft(id: string, now: number): DraftRecord {
-  return { v: 1, id, createdAt: now, updatedAt: now, meta: { title: 'Untitled', excerpt: '', words: 0 }, sessions: [], head: 0, epoch: newEpoch() };
+  return {
+    v: 1,
+    id,
+    createdAt: now,
+    updatedAt: now,
+    meta: { title: 'Untitled', excerpt: '', words: 0 },
+    sessions: [],
+    head: 0,
+    epoch: newEpoch(),
+  };
 }
 
 export function replay(snapshot: Snapshot | null, ops: Op[]): string {

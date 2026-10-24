@@ -20,10 +20,16 @@ async function makeWriter(id = 'd1') {
   const rec = newDraft(id, T0);
   await db.createDraft(rec);
   const events = { stale: null as string | null, commits: 0 };
-  const w = new DraftWriter(db, rec, '', {
-    onStale: (t) => (events.stale = t),
-    onCommit: () => events.commits++,
-  }, () => 0);
+  const w = new DraftWriter(
+    db,
+    rec,
+    '',
+    {
+      onStale: (t) => (events.stale = t),
+      onCommit: () => events.commits++,
+    },
+    () => 0,
+  );
   return { w, events };
 }
 
@@ -169,7 +175,13 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     for (let i = 1; i < 20_000; i++) ops.push([0, 0, 200_000 + i - 1, 'y']);
     const rec = { ...newDraft('big', T0), head: ops.length };
     const started = Date.now();
-    const res = await db.importAll({ format: 'kansobackup', v: 1, exportedAt: T0, drafts: [{ record: rec, ops, snapshots: [] }], days: [] });
+    const res = await db.importAll({
+      format: 'kansobackup',
+      v: 1,
+      exportedAt: T0,
+      drafts: [{ record: rec, ops, snapshots: [] }],
+      days: [],
+    });
     expect(res.added).toBe(1);
     expect(Date.now() - started).toBeLessThan(5000);
     expect((await db.loadDraft('big'))!.text.length).toBe(200_000 + 19_999);
@@ -238,7 +250,13 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     // another tab clears history (head 1 → 0) and types one op (head 0 → 1): same head, new epoch
     const cleared = await db.clearHistory('d1', 'one', T0 + 500, 1, loaded.record.epoch);
     expect(cleared.ok).toBe(true);
-    const fresh = new DraftWriter(db, (cleared as { record: typeof loaded.record }).record, 'one', { onStale: () => {}, onCommit: () => {} }, () => 0);
+    const fresh = new DraftWriter(
+      db,
+      (cleared as { record: typeof loaded.record }).record,
+      'one',
+      { onStale: () => {}, onCommit: () => {} },
+      () => 0,
+    );
     fresh.push({ runs: [3, '!'], at: T0 + 600, kind: 'other' });
     await fresh.flush(true, T0 + 600);
     old.push({ runs: [3, '?'], at: T0 + 700, kind: 'other' });

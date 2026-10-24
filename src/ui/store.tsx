@@ -21,7 +21,15 @@ interface Store {
 const Ctx = createContext<Store | null>(null);
 const storage = new IndexedDbAdapter();
 
-export function StoreProvider({ children, onReady, onBootError }: { children: ReactNode; onReady?: (drafts: DraftRecord[]) => void; onBootError?: (e: unknown) => void }) {
+export function StoreProvider({
+  children,
+  onReady,
+  onBootError,
+}: {
+  children: ReactNode;
+  onReady?: (drafts: DraftRecord[]) => void;
+  onBootError?: (e: unknown) => void;
+}) {
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [drafts, setDrafts] = useState<DraftRecord[]>([]);
   const [today, setToday] = useState(0);

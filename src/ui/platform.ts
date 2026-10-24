@@ -38,7 +38,12 @@ export function pickFile(accept: string): Promise<File | null> {
 }
 
 export function safeFileName(title: string): string {
-  return (title || 'Untitled').replace(/[\\/:*?"<>|]+/g, '').trim().slice(0, 80) || 'Untitled';
+  return (
+    (title || 'Untitled')
+      .replace(/[\\/:*?"<>|]+/g, '')
+      .trim()
+      .slice(0, 80) || 'Untitled'
+  );
 }
 
 const DAY = 86_400_000;

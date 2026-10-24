@@ -3,10 +3,7 @@ import fc from 'fast-check';
 import { apply, makeOp, type Op } from './kop';
 import { deriveMeta, needsNewSession, opTimes, renameChange, replay, SESSION_GAP_MS, shouldSnapshot, type Session } from './draft';
 
-const arbEdits = fc.array(
-  fc.record({ pos: fc.nat(), del: fc.nat({ max: 5 }), ins: fc.string({ maxLength: 6 }) }),
-  { maxLength: 60 },
-);
+const arbEdits = fc.array(fc.record({ pos: fc.nat(), del: fc.nat({ max: 5 }), ins: fc.string({ maxLength: 6 }) }), { maxLength: 60 });
 
 function toOps(edits: { pos: number; del: number; ins: string }[]): { ops: Op[]; text: string } {
   let text = '';
@@ -59,15 +56,27 @@ describe('sessions (R16)', () => {
       { opIndex: 0, at: 1_000_000, tzOffset: 0 },
       { opIndex: 2, at: 5_000_000, tzOffset: 0 },
     ];
-    const ops: Op[] = [[0, 300, 'ab'], [200, 0, 2, 'c'], [0, 0, 3, 'd']];
+    const ops: Op[] = [
+      [0, 300, 'ab'],
+      [200, 0, 2, 'c'],
+      [0, 0, 3, 'd'],
+    ];
     expect(opTimes(sessions, ops)).toEqual([1_000_000, 1_000_500, 5_000_000]);
   });
 });
 
 describe('opTimes across sessions', () => {
   it('restarts the clock at each session start', () => {
-    const sessions: Session[] = [{ opIndex: 0, at: 1000, tzOffset: 0 }, { opIndex: 1, at: 9000, tzOffset: 0 }];
-    expect(opTimes(sessions, [[0, 50, 'a'], [400, 0, 1, 'b']])).toEqual([1000, 9000]);
+    const sessions: Session[] = [
+      { opIndex: 0, at: 1000, tzOffset: 0 },
+      { opIndex: 1, at: 9000, tzOffset: 0 },
+    ];
+    expect(
+      opTimes(sessions, [
+        [0, 50, 'a'],
+        [400, 0, 1, 'b'],
+      ]),
+    ).toEqual([1000, 9000]);
   });
 });
 

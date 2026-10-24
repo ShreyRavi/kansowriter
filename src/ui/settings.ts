@@ -55,8 +55,9 @@ export function resolveTheme(choice: ThemeChoice): 'paper' | 'night' {
   return typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'paper';
 }
 
-const pickOf = <T,>(x: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(x as T) ? (x as T) : fallback);
-const numIn = (x: unknown, lim: { min: number; max: number }, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? clamp(x, lim) : fallback);
+const pickOf = <T>(x: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(x as T) ? (x as T) : fallback);
+const numIn = (x: unknown, lim: { min: number; max: number }, fallback: number) =>
+  typeof x === 'number' && Number.isFinite(x) ? clamp(x, lim) : fallback;
 
 /** Stored settings come from an older version or another tab: keep only valid values. */
 export function sanitizeSettings(raw: unknown): Settings {

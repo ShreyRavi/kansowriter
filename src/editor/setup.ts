@@ -76,7 +76,10 @@ export function setTypewriter(view: EditorView, on: boolean): void {
 /** Replace the whole document without recording it (loading a draft or a rebuilt writer). */
 export function loadText(view: EditorView, text: string): void {
   if (view.state.doc.toString() === text) return;
-  view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)] });
+  view.dispatch({
+    changes: { from: 0, to: view.state.doc.length, insert: text },
+    annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)],
+  });
 }
 
 export { setFocusMode };

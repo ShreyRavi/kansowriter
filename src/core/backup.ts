@@ -92,7 +92,8 @@ function isDraft(d: unknown): d is BackupDraft {
   let prev = -1;
   for (const s of r.sessions) {
     // strictly increasing, and each session starts at a real op
-    if (!isObj(s) || !isInt(s.opIndex) || s.opIndex <= prev || s.opIndex >= d.ops.length || !isNum(s.at) || !isNum(s.tzOffset)) return false;
+    if (!isObj(s) || !isInt(s.opIndex) || s.opIndex <= prev || s.opIndex >= d.ops.length || !isNum(s.at) || !isNum(s.tzOffset))
+      return false;
     prev = s.opIndex;
   }
   for (const s of d.snapshots) {
@@ -111,7 +112,14 @@ function isDraft(d: unknown): d is BackupDraft {
 }
 
 function isDay(day: unknown): day is Day {
-  return isObj(day) && typeof day.key === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(day.key) && isNum(day.B) && isNum(day.peak) && isNum(day.resetOffset);
+  return (
+    isObj(day) &&
+    typeof day.key === 'string' &&
+    /^\d{4}-\d{2}-\d{2}$/.test(day.key) &&
+    isNum(day.B) &&
+    isNum(day.peak) &&
+    isNum(day.resetOffset)
+  );
 }
 
 /** File name with the local date (not UTC), e.g. kansowriter-2026-10-23.kansobackup */
