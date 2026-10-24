@@ -233,6 +233,14 @@ export class IndexedDbAdapter implements StorageAdapter {
     });
     return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots, this.db.days], async () => {
       const r: ImportResult = { added: 0, copies: 0, skipped: 0, damaged: 0 };
+      let texts: Set<string> | null = null; // every local draft's text, loaded once on the first fork
+      const localTexts = async () => {
+        if (!texts) {
+          texts = new Set();
+          for (const rec of await this.db.drafts.toArray()) texts.add((await this.loadDraft(rec.id))?.text ?? '');
+        }
+        return texts;
+      };
       for (const p of prepared) {
         if (!p) {
           r.damaged++;
@@ -242,7 +250,7 @@ export class IndexedDbAdapter implements StorageAdapter {
         let id = d.record.id;
         let meta = d.record.meta;
         if (await this.db.drafts.get(id)) {
-          if (await this.alreadyHere(id, d.ops, text)) {
+          if ((await this.alreadyHere(id, d.ops, text)) || (await localTexts()).has(text)) {
             r.skipped++;
             continue;
           }
@@ -251,6 +259,7 @@ export class IndexedDbAdapter implements StorageAdapter {
           r.copies++;
         }
         r.added++;
+        (texts as Set<string> | null)?.add(text);
         const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
         if (snap) snaps.push({ draftId: id, ...(snap as Snapshot) });
         await this.db.drafts.add({ ...d.record, id, meta, head: d.ops.length, epoch: newEpoch() });
@@ -264,17 +273,14 @@ export class IndexedDbAdapter implements StorageAdapter {
 
   /**
    * The backup's version of a draft is already on this device when: the text matches; the local
-   * history starts with the backup's ops (an older backup restored onto the same device); or an
-   * earlier import already added it as a copy. Only real divergence becomes a copy.
+   * history starts with the backup's ops (an older backup restored onto the same device). The
+   * caller also skips text an earlier import already added as a copy. Only real divergence copies.
    */
   private async alreadyHere(id: string, ops: Op[], text: string): Promise<boolean> {
     if ((await this.loadDraft(id))?.text === text) return true;
     if (ops.length) {
       const local = await this.db.ops.where('[draftId+seq]').between([id, 0], [id, ops.length], true, false).toArray();
       if (local.length === ops.length && local.every((row, i) => JSON.stringify(row.op) === JSON.stringify(ops[i]))) return true;
-    }
-    for (const rec of await this.db.drafts.toArray()) {
-      if (rec.id !== id && (await this.loadDraft(rec.id))?.text === text) return true;
     }
     return false;
   }

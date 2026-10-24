@@ -44,6 +44,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   const [palette, setPalette] = useState(false);
   const [mountKey, setMountKey] = useState(0);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** this tab stopped saving and the editor holds words storage doesn't: every guard checks it */
+  const staleRef = useRef(false);
   const leaveRef = useRef<(go: () => void) => Promise<void>>(async (go) => go());
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
@@ -51,6 +53,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   // ---------- editor + single-writer session ----------
   useEffect(() => {
     let disposed = false;
+    staleRef.current = false;
     const host = hostRef.current!;
     let commitTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -73,6 +76,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
 
       const events = {
         onStale: (text: string) => {
+          staleRef.current = true;
           writerRef.current = null;
           setReadOnly(view, true);
           setChromeVisible(true);
@@ -80,6 +84,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         },
         onCommit: (rec: { meta: { title: string } }) => {
           setTitle(rec.meta.title);
+          // a later save caught up: the "not saved" warning no longer applies
+          if (!staleRef.current && !writerRef.current?.dirty) setNotice((n) => (n?.kind === 'unsaved-leave' ? null : n));
           broadcast({ type: 'committed', draftId });
           if (commitTimer) return;
           commitTimer = setTimeout(() => {
@@ -88,7 +94,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
             void refreshDrafts();
           }, 250);
         },
-        onError: (e: unknown | null) => setNotice((n) => (e ? (n?.kind === 'stale' ? n : { kind: 'saving-error' }) : n?.kind === 'saving-error' ? null : n)),
+        onError: (e: unknown | null) =>
+          setNotice((n) => {
+            if (staleRef.current || n?.kind === 'unsaved-leave') return n;
+            return e ? { kind: 'saving-error' } : n?.kind === 'saving-error' ? null : n;
+          }),
       };
 
       sessionRef.current = attachDraftSession(
@@ -116,9 +126,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
             if (reason === 'error') {
               // never replace a stale notice: it guards unsaved words still in the editor
               setNotice((n) =>
-                n?.kind === 'stale' ? n : error instanceof DamagedDraftError ? { kind: 'damaged', text: error.text } : { kind: 'open-error' },
+                staleRef.current ? n : error instanceof DamagedDraftError ? { kind: 'damaged', text: error.text } : { kind: 'open-error' },
               );
-            } else setNotice((n) => (n?.kind === 'stale' ? n : { kind: 'readonly' }));
+            } else setNotice((n) => (staleRef.current ? n : { kind: 'readonly' }));
           },
         },
         async (w, now) => (await storage.clearHistory(draftId, w.savedText, now, w.head, w.draft.epoch)).ok,
@@ -254,7 +264,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
     async (go: () => void) => {
       const w = writerRef.current;
       if (w?.dirty) await w.flush(true);
-      if (w?.dirty || notice?.kind === 'stale') {
+      if (w?.dirty || staleRef.current) {
         // the editor still shows the words; Copy keeps them, Leave anyway goes (never a trap)
         pendingLeave.current = go;
         setChromeVisible(true);
@@ -263,19 +273,19 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       }
       go();
     },
-    [notice],
+    [],
   );
   leaveRef.current = leave;
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (writerRef.current?.dirty || notice?.kind === 'stale' || notice?.kind === 'unsaved-leave') {
+      if (writerRef.current?.dirty || staleRef.current) {
         e.preventDefault();
         e.returnValue = ''; // older Chromium / Safari only prompt with this set
       }
     };
     window.addEventListener('beforeunload', onBeforeUnload);
     return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [notice]);
+  }, []);
 
   const copyUnsaved = async () => {
     const text = currentText();
@@ -419,6 +429,17 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
                 >
                   Leave anyway
                 </button>
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() => {
+                    pendingLeave.current = null;
+                    // back to the notice that was there: still stale, or just retrying saves
+                    setNotice(staleRef.current ? { kind: 'stale', text: currentText() } : null);
+                  }}
+                >
+                  Stay
+                </button>
               </>
             )}
             {notice.kind === 'readonly' && (
@@ -444,7 +465,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
                   onClick={async () => {
                     try {
                       const loaded = await storage.loadDraft(draftId);
-                      if (loaded) await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch);
+                      const r = loaded && (await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch));
+                      if (!r || !r.ok) return setNotice({ kind: 'open-error' });
                     } catch {
                       return setNotice({ kind: 'open-error' });
                     }
