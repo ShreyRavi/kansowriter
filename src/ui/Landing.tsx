@@ -47,6 +47,8 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
   const { storage, drafts } = useStore();
   const { shown, done } = useTypedLine();
   const [feedback, setFeedback] = useState<string | null>(null);
+  /** some drafts were restored and some left out: wait for a click so the feedback can be read */
+  const [partial, setPartial] = useState(false);
   const [caretGone, setCaretGone] = useState(false);
   useEffect(() => {
     if (!done) return;
@@ -59,7 +61,10 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
     const r = await importBackup(storage);
     if (!r) return setFeedback(null);
     setFeedback(r.label);
-    if (r.added) onRestored();
+    if (!r.added) return;
+    // opening the editor right away would replace this page before "left out …" could be read
+    if (r.damaged) setPartial(true);
+    else onRestored();
   };
 
   return (
@@ -75,9 +80,15 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
         </button>
         {drafts.length === 0 && (
           <div className="restore ui">
-            <button type="button" className="text-btn" onClick={restore}>
-              Restore from a backup
-            </button>
+            {partial ? (
+              <button type="button" className="text-btn" onClick={onRestored}>
+                Open restored drafts
+              </button>
+            ) : (
+              <button type="button" className="text-btn" onClick={restore}>
+                Restore from a backup
+              </button>
+            )}
             {feedback && (
               <p className="feedback" role="status">
                 {feedback}

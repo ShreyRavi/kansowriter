@@ -20,7 +20,13 @@ const UPDATE_IDLE_MS = 3000;
 
 // the palette is its own chunk: it isn't needed to start writing (fetched at idle, see below)
 const loadPalette = () => import('./CommandPalette');
-const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
+// one retry for a dropped request; a second failure (e.g. the chunk is gone after a deploy)
+// rejects into the ErrorBoundary's Reload screen
+const CommandPalette = lazy(() =>
+  loadPalette()
+    .catch(() => loadPalette())
+    .then((m) => ({ default: m.CommandPalette })),
+);
 
 /** Resolves true when it left; false when unsaved words kept the editor open (the notice then holds `go`). */
 export type LeaveGuard = (go: () => void) => Promise<boolean>;
@@ -153,8 +159,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         },
         {
           onWritable: (w) => {
+            if (staleRef.current) {
+              // a clear's rebuilt writer, after a flush meanwhile went stale: resume only when every
+              // handed-back word was carried onto it; otherwise the stale notice keeps guarding them
+              if (w.currentText !== staleTextRef.current) return;
+              staleRef.current = false;
+              staleTextRef.current = null;
+              setNotice((n) => (n?.kind === 'stale' ? null : n));
+            }
             loadText(view, w.currentText);
-            if (view.state.doc.length !== w.currentText.length) {
+            if (view.state.doc.toString() !== w.currentText) {
               // the editor normalized the text (e.g. \r line breaks): recording would desync from the
               // log, so offer the same repair as a damaged history (rebase on the text as shown)
               void sessionRef.current?.dispose();
@@ -374,7 +388,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         return r?.label ?? null;
       },
       clearHistory: async () => {
-        const ok = (await sessionRef.current?.clearHistory()) ?? false;
+        // a storage error (IndexedDB down) answers in the row instead of leaving "Clearing…"
+        const ok = await (sessionRef.current?.clearHistory() ?? Promise.resolve(false)).catch(() => null);
+        if (ok === null) return 'Couldn’t clear history. Try again';
         return ok ? 'History cleared' : 'Couldn’t clear history in this tab';
       },
       deleteDraft: async () => {
@@ -400,9 +416,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       },
       resetToday: async () => {
         const now = Date.now();
-        await storage.resetDay(dayKey(now, new Date(now).getTimezoneOffset()));
-        await refreshToday();
+        try {
+          await storage.resetDay(dayKey(now, new Date(now).getTimezoneOffset()));
+        } catch {
+          return 'Couldn’t reset. Try again';
+        }
+        await refreshToday().catch(() => {});
         broadcast({ type: 'library' }); // other tabs reread words today
+        return 'Reset';
       },
     }),
     [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],

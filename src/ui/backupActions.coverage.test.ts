@@ -84,7 +84,7 @@ describe('importBackup', () => {
   it('a valid backup is imported and labelled from the result', async () => {
     platform.pickFile.mockResolvedValue(file(await encodeBackup(data)));
     const importAll = vi.fn(async () => ({ added: 1, copies: 0, skipped: 0, damaged: 0 }));
-    expect(await importBackup(storageWith({ importAll }))).toEqual({ label: 'Added 1 draft', added: 1 });
+    expect(await importBackup(storageWith({ importAll }))).toEqual({ label: 'Added 1 draft', added: 1, damaged: 0 });
     expect(importAll).toHaveBeenCalledWith(
       expect.objectContaining({ format: 'kansobackup', drafts: [expect.objectContaining({ ops: [] })] }),
     );

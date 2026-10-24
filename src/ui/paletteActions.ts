@@ -11,5 +11,6 @@ export interface PaletteActions {
   clearHistory(): Promise<string>;
   /** resolves to an error label when the draft could not be deleted */
   deleteDraft(): Promise<string | null>;
-  resetToday(): Promise<void>;
+  /** resolves to the label to show in the row ('Reset', or why it couldn't) */
+  resetToday(): Promise<string>;
 }

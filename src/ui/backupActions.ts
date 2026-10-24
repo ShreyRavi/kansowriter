@@ -38,8 +38,8 @@ export function importLabel({ added, copies, skipped, damaged }: ImportResult): 
   return parts.join(', ');
 }
 
-/** Import a .kansobackup; returns the feedback label and how many drafts were added. */
-export async function importBackup(storage: StorageAdapter): Promise<{ label: string; added: number } | null> {
+/** Import a .kansobackup; returns the feedback label, how many drafts were added and how many left out. */
+export async function importBackup(storage: StorageAdapter): Promise<{ label: string; added: number; damaged?: number } | null> {
   const file = await pickFile(`${BACKUP_EXTENSION},application/octet-stream`);
   if (!file) return null;
   let data;
@@ -50,7 +50,7 @@ export async function importBackup(storage: StorageAdapter): Promise<{ label: st
   }
   try {
     const r = await storage.importAll(data);
-    return { label: importLabel(r), added: r.added };
+    return { label: importLabel(r), added: r.added, damaged: r.damaged };
   } catch (e) {
     // a valid backup that this device couldn't store (quota, IndexedDB error) is not "not a backup"
     return { label: e instanceof BackupError ? e.message : 'Couldn’t restore: this device’s storage is full or unavailable', added: 0 };

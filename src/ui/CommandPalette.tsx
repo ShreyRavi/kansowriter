@@ -12,6 +12,7 @@ const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Li
 type Expandable = 'theme' | 'typeface' | 'hide';
 const mod = () => (isMac() ? '⌘' : 'Ctrl ');
 type NumKey = 'textSize' | 'lineWidth' | 'goal';
+const FAILED = 'Couldn’t do that. Try again';
 
 /**
  * ⌘K palette: every setting lives here (no settings screen). Rows edit in place (19A):
@@ -55,7 +56,11 @@ export function CommandPalette({
   };
   const run = (key: string, pending: string, f: () => Promise<string | null>) => {
     flash(key, pending, true);
-    void f().then((t) => flash(key, t));
+    // a rejection must never leave "Saving…" / "Clearing…" in the row
+    void f().then(
+      (t) => flash(key, t),
+      () => flash(key, FAILED),
+    );
   };
   const backToSearch = () => inputRef.current?.focus();
   const closeChoices = () => {
@@ -73,7 +78,8 @@ export function CommandPalette({
   };
   const commitEdit = () => {
     if (editing === 'rename') flash('rename', actions.rename(draftValue));
-    else if (editing) {
+    else if (editing && draftValue.trim()) {
+      // an emptied field keeps the current value (Number('') is 0, which would clamp to the minimum)
       const n = Number(draftValue);
       if (Number.isFinite(n))
         update({ [editing]: clamp(Math.round(n / LIMITS[editing].step) * LIMITS[editing].step, LIMITS[editing]) } as Partial<Settings>);
@@ -273,7 +279,12 @@ export function CommandPalette({
               <Item
                 label="Reset today’s count"
                 value={labels.reset ?? ''}
-                onSelect={() => void actions.resetToday().then(() => flash('reset', 'Reset'))}
+                onSelect={() =>
+                  void actions.resetToday().then(
+                    (t) => flash('reset', t),
+                    () => flash('reset', FAILED),
+                  )
+                }
               />
             </Command.Group>
 
