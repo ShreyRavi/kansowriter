@@ -53,7 +53,8 @@ export interface StorageAdapter {
   deleteDraft(id: string): Promise<void>;
   /**
    * R9: keep text, drop history; today's words-today value is untouched (R20).
-   * Rejected unless head and epoch still match what the caller loaded.
+   * Rejected unless head and epoch still match what the caller loaded. `meta` replaces the
+   * record's meta (a repair keeps different text than the record was counted from).
    */
   clearHistory(
     id: string,
@@ -61,6 +62,7 @@ export interface StorageAdapter {
     now: number,
     baseHead: number,
     baseEpoch: string,
+    meta?: DraftMeta,
   ): Promise<{ ok: true; record: DraftRecord } | { ok: false }>;
   getDay(key: string): Promise<Day | undefined>;
   resetDay(key: string): Promise<Day>;

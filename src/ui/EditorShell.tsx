@@ -15,6 +15,9 @@ import { exportAll, importBackup } from './backupActions';
 import { applyUpdate, useUpdateReady } from './updates';
 import { FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
 
+/** typing pause before the update notice may first appear while the chrome is faded */
+const UPDATE_IDLE_MS = 3000;
+
 // the palette is its own chunk: it isn't needed to start writing (fetched at idle, see below)
 const loadPalette = () => import('./CommandPalette');
 const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.CommandPalette })));
@@ -23,7 +26,7 @@ const CommandPalette = lazy(() => loadPalette().then((m) => ({ default: m.Comman
 export type LeaveGuard = (go: () => void) => Promise<boolean>;
 
 type NoticeState =
-  | { kind: 'stale'; text: string }
+  | { kind: 'stale' }
   | { kind: 'readonly' }
   | { kind: 'saving-error' }
   | { kind: 'unsaved-leave' }
@@ -56,6 +59,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const [sidebar, setSidebar] = useState(false);
   const [palette, setPalette] = useState(false);
   const [mountKey, setMountKey] = useState(0);
+  /** the update notice, latched: it first appears only while the writer isn't mid-sentence, then stays */
+  const [showUpdate, setShowUpdate] = useState(false);
+  const lastActivity = useRef(0);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** this tab stopped saving and the editor holds words storage doesn't: every guard checks it */
   const staleRef = useRef(false);
@@ -113,7 +119,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           writerRef.current = null;
           setReadOnly(view, true);
           setChromeVisible(true);
-          setNotice({ kind: 'stale', text: staleTextRef.current });
+          setNotice({ kind: 'stale' });
         },
         onCommit: (rec: DraftRecord) => {
           setTitle(rec.meta.title);
@@ -170,6 +176,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             handingOverRef.current = reason === 'handed-over';
             setReadOnly(view, true);
             setChromeVisible(true);
+            // a commit may have landed before readOnlyRef was set (its message found nothing to follow)
+            if (readOnlyRef.current) followRef.current();
             if (reason === 'error') {
               // never replace a stale notice: it guards unsaved words still in the editor
               setNotice((n) =>
@@ -277,6 +285,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
 
   // ---------- chrome fade ----------
   const activity = useCallback(() => {
+    lastActivity.current = Date.now();
     const hide = settingsRef.current.hideChrome;
     if (hide === 'never') return;
     if (fadeTimer.current) clearTimeout(fadeTimer.current);
@@ -301,6 +310,21 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       if (fadeTimer.current) clearTimeout(fadeTimer.current);
     };
   }, [reveal]);
+
+  // ---------- update notice ----------
+  useEffect(() => {
+    if (showUpdate || !updateReady || staleRef.current) return;
+    // shown with the chrome; while the chrome is faded (writing), only once typing paused and saved
+    if (chromeVisible) return setShowUpdate(true);
+    let t: ReturnType<typeof setTimeout>;
+    const check = () => {
+      const idle = Date.now() - lastActivity.current;
+      if (idle >= UPDATE_IDLE_MS && !writerRef.current?.dirty && !staleRef.current) setShowUpdate(true);
+      else t = setTimeout(check, Math.max(UPDATE_IDLE_MS - idle, 500));
+    };
+    check();
+    return () => clearTimeout(t);
+  }, [showUpdate, updateReady, chromeVisible, notice]);
 
   // ---------- actions ----------
   const currentText = () => viewRef.current?.state.doc.toString() ?? '';
@@ -422,23 +446,27 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
    * (when Web Locks exist) keeps a tab that holds it from being rewritten underneath.
    */
   const repairDamaged = async (d: { text: string; head: number; epoch: string }) => {
-    const rebase = () => storage.clearHistory(draftId, d.text, Date.now(), d.head, d.epoch);
+    // fresh meta: the record's word count was kept for the text before the damage, not this one
+    const rebase = async () => (await storage.clearHistory(draftId, d.text, Date.now(), d.head, d.epoch, deriveMeta(d.text))).ok;
     const locks = typeof navigator !== 'undefined' ? (navigator.locks as LockManager | undefined) : undefined;
+    let repaired: boolean;
     try {
       // no lock (another tab owns the draft) or a refused check (it changed since): nothing is
       // written; the remount below shows what storage holds (read-only, or damaged with a fresh head)
-      if (locks) await locks.request(`draft:${draftId}`, { ifAvailable: true }, async (lock) => lock && (await rebase()));
-      else await rebase();
+      repaired = locks
+        ? await locks.request(`draft:${draftId}`, { ifAvailable: true }, async (lock) => !!lock && (await rebase()))
+        : await rebase();
     } catch {
       return setNotice({ kind: 'open-error' });
     }
+    if (repaired) broadcast({ type: 'library' }); // other tabs reread the draft's row (title, words)
     setNotice(null);
     setMountKey((k) => k + 1);
   };
 
   const copyUnsaved = async () => {
     // a stale tab copies exactly the text it handed back
-    const text = staleRef.current && staleTextRef.current !== null ? staleTextRef.current : currentText();
+    const text = staleTextRef.current ?? currentText();
     try {
       await navigator.clipboard.writeText(text);
       setCopyLabel('Copied');
@@ -565,7 +593,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             <div style={{ width: `${pct}%` }} />
           </div>
         )}
-        {!notice && updateReady && !staleRef.current && (
+        {!notice && showUpdate && !staleRef.current && (
           // lowest priority (R11): a new version waits; only this click reloads. Once shown it stays
           // (no flicker while typing): leave() still keeps unsaved words from being reloaded away
           <div className="notice" role="status">
@@ -605,7 +633,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
                   onClick={() => {
                     pendingLeave.current = null;
                     // back to the notice that was there: still stale, or just retrying saves
-                    setNotice(staleRef.current ? { kind: 'stale', text: staleTextRef.current ?? currentText() } : null);
+                    setNotice(staleRef.current ? { kind: 'stale' } : null);
                   }}
                 >
                   Stay

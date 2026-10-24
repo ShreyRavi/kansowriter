@@ -223,6 +223,7 @@ describe('attachDraftSession (single writer, R23)', () => {
     await b.takeOver();
     await until(() => log.includes('a:handed-over-done'));
     const i = (s: string) => log.indexOf(s);
+    for (const e of ['a:readonly:handed-over', 'post:released', 'a:handed-over-done']) expect(i(e)).toBeGreaterThanOrEqual(0);
     expect(i('a:readonly:handed-over')).toBeLessThan(i('post:released'));
     expect(i('post:released')).toBeLessThan(i('a:handed-over-done'));
     expect((await db.loadDraft('d1'))!.text).toBe('hello');
@@ -569,6 +570,56 @@ describe('attachDraftSession state matrix', () => {
     const append = vi.spyOn(db, 'append');
     await aw.flush(true);
     expect(append).not.toHaveBeenCalled();
+  });
+
+  it('flush-committed-not-released × steal-mid-handover: onHandedOver, no onStale, the new holder has the word', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const aw = a.writer!;
+    aw.push({ runs: ['final'], at: Date.now(), kind: 'type' }); // still pending: the handover flush commits it
+    const flush = aw.flush.bind(aw);
+    const append = vi.spyOn(db, 'append');
+    // the final append commits, then the tab stalls before it releases the lock
+    aw.flush = (...args) => flush(...args).then(() => new Promise<void>(() => {}));
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver(); // no 'released' arrives: steals after STEAL_AFTER_MS
+    await until(() => b.writer !== null);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(log).toContain('a:readonly:handed-over');
+    await until(() => log.includes('a:handed-over-done'));
+    expect(count(log, 'a:stale')).toBe(0);
+    expect(log).not.toContain('a:readonly:stolen');
+    expect(b.writer!.currentText).toBe('final');
+  });
+
+  it('append-failing × steal-mid-handover: onStale with the full text, no onHandedOver, no append after the steal', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const aw = a.writer!;
+    aw.push({ runs: ['saved '], at: Date.now() - 2000, kind: 'other' });
+    await aw.flush(true);
+    aw.push({ runs: [6, 'lost?'], at: Date.now(), kind: 'type' });
+    let fail: () => void = () => {};
+    // the handover's final append hangs, then rejects only after the steal
+    const append = vi
+      .spyOn(db, 'append')
+      .mockImplementation(() => new Promise((_, reject) => (fail = () => reject(new Error('QuotaExceededError')))));
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(log).toContain('a:stale:saved lost?');
+    expect(append).toHaveBeenCalledTimes(1);
+    fail();
+    await new Promise((r) => setTimeout(r, 20));
+    await aw.flush(true);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(log).not.toContain('a:handed-over-done');
+    expect(count(log, 'a:stale')).toBe(1);
+    expect(b.writer!.currentText).toBe('saved ');
   });
 
   it('stale × steal: no second onStale', async () => {

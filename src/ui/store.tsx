@@ -21,6 +21,18 @@ interface Store {
 }
 
 const Ctx = createContext<Store | null>(null);
+
+const isRecordFor = (r: unknown, id: string): r is DraftRecord => {
+  const rec = r as Partial<DraftRecord> | null;
+  return (
+    typeof rec === 'object' &&
+    rec !== null &&
+    rec.id === id &&
+    typeof rec.updatedAt === 'number' &&
+    typeof rec.meta === 'object' &&
+    rec.meta !== null
+  );
+};
 const storage = new IndexedDbAdapter();
 
 export function StoreProvider({
@@ -89,8 +101,11 @@ export function StoreProvider({
         });
         return;
       }
-      if (m?.type === 'committed') committed.set(m.draftId, m.record);
-      else if (m?.type === 'released' || m?.type === 'deleted' || m?.type === 'library') full = true;
+      // a row from another tab (maybe another version) goes in only if it is shaped like one; else reread
+      if (m?.type === 'committed') {
+        if (isRecordFor(m.record, m.draftId)) committed.set(m.draftId, m.record);
+        else full = true;
+      } else if (m?.type === 'released' || m?.type === 'deleted' || m?.type === 'library') full = true;
       else return;
       if (refresh) return; // another tab commits every BATCH_MS while typing: coalesce
       refresh = setTimeout(() => {

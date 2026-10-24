@@ -160,14 +160,14 @@ export class IndexedDbAdapter implements StorageAdapter {
     });
   }
 
-  async clearHistory(id: string, text: string, now: number, baseHead: number, baseEpoch: string) {
+  async clearHistory(id: string, text: string, now: number, baseHead: number, baseEpoch: string, meta?: DraftMeta) {
     return this.db.transaction('rw', this.db.drafts, this.db.ops, this.db.snapshots, async () => {
       const rec = await this.db.drafts.get(id);
       if (!rec || rec.head !== baseHead || rec.epoch !== baseEpoch) return { ok: false } as const;
       await this.db.ops.where('draftId').equals(id).delete();
       await this.db.snapshots.where('draftId').equals(id).delete();
       await this.db.snapshots.put({ draftId: id, opIndex: 0, text });
-      const record: DraftRecord = { ...rec, head: 0, sessions: [], updatedAt: now, epoch: newEpoch() };
+      const record: DraftRecord = { ...rec, meta: meta ?? rec.meta, head: 0, sessions: [], updatedAt: now, epoch: newEpoch() };
       await this.db.drafts.put(record);
       return { ok: true, record } as const;
     });

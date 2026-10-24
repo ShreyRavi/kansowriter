@@ -2,8 +2,8 @@ import 'fake-indexeddb/auto';
 import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { IndexedDbAdapter } from './idb';
 import { DamagedDraftError, DraftWriter, openDraftWriter, type Change } from './writer';
-import { newDraft } from '../core/draft';
-import { wordsToday, dayKey } from '../core/words';
+import { deriveMeta, newDraft } from '../core/draft';
+import { countWords, wordsToday, dayKey } from '../core/words';
 import { replay } from '../core/draft';
 import { decodeBackup, encodeBackup } from '../core/backup';
 
@@ -336,6 +336,34 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(other.ok).toBe(true);
     await db.db.drafts.update('d1', { head: 2 });
     expect((await db.clearHistory('d1', d.text, T0 + 2000, d.head, d.epoch)).ok).toBe(false);
+  });
+
+  it('clear-history stores a meta override; without one it keeps the record meta', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'alpha beta', T0);
+    await w.flush(true, T0 + 2000);
+    const rec = (await db.getRecord('d1'))!;
+    const kept = await db.clearHistory('d1', 'alpha beta', T0 + 3000, rec.head, rec.epoch);
+    expect(kept.ok && kept.record.meta).toEqual(rec.meta);
+    const meta = deriveMeta('# New\n\nthree words here');
+    const res = await db.clearHistory('d1', '# New\n\nthree words here', T0 + 4000, 0, (await db.getRecord('d1'))!.epoch, meta);
+    expect(res.ok && res.record.meta).toEqual(meta);
+    expect((await db.getRecord('d1'))!.meta).toEqual(meta);
+  });
+
+  it('a damaged repair stores the word count of the readable text, not the inflated old one', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'good', T0);
+    await w.flush(true, T0 + 500);
+    await db.db.ops.add({ draftId: 'd1', seq: 1, op: [0, 0, 99, 'x'] });
+    // the record was counted from text that no longer replays (e.g. words appended after the damage)
+    await db.db.drafts.update('d1', { head: 2, meta: { title: 'good', excerpt: '', words: 40 } });
+    const d = (await openDraftWriter(db, 'd1', { onStale: () => {}, onCommit: () => {} }).catch((e: unknown) => e)) as DamagedDraftError;
+    expect(d).toBeInstanceOf(DamagedDraftError);
+    // what EditorShell's repairDamaged passes
+    expect((await db.clearHistory('d1', d.text, T0 + 1000, d.head, d.epoch, deriveMeta(d.text))).ok).toBe(true);
+    expect((await db.getRecord('d1'))!.meta.words).toBe(countWords(d.text));
+    expect(countWords(d.text)).toBe(1);
   });
 
   it('import into a non-empty database keeps existing days and rebuilds snapshots', async () => {
