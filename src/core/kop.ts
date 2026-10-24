@@ -152,7 +152,7 @@ export function compose(a: Run[], b: Run[]): Run[] {
   return normalize(out);
 }
 
-/** True when an op only inserts text at one position (used for typing merges). */
+/** The single insertion `{at, text}` when runs only insert text at one position, else null (used for typing merges). */
 export function insertionOf(runs: Run[]): { at: number; text: string } | null {
   let at = 0;
   let text: string | null = null;

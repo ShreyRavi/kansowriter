@@ -67,6 +67,10 @@ const stripMd = (s: string) =>
     .replace(/[*_`~]+/g, '')
     .trim();
 
+const EXCERPT_MAX = 160;
+/** longest derived title (also caps exported file names) */
+export const TITLE_MAX = 80;
+
 /**
  * Title = first non-empty line, excerpt = following text up to 160 chars. Scans only as far as
  * needed; pass `words` when the caller tracks the count incrementally.
@@ -80,7 +84,7 @@ export function deriveMeta(text: string, words?: number): DraftMeta {
     const end = nl === -1 ? text.length : nl;
     const line = stripMd(text.slice(pos, end));
     if (line) {
-      if (!title) title = line.slice(0, 80);
+      if (!title) title = line.slice(0, TITLE_MAX);
       else excerpt = excerpt ? `${excerpt} ${line}` : line;
     }
     if (nl === -1) break;
@@ -88,8 +92,6 @@ export function deriveMeta(text: string, words?: number): DraftMeta {
   }
   return { title: title || 'Untitled', excerpt: excerpt.slice(0, EXCERPT_MAX), words: words ?? countWords(text) };
 }
-
-const EXCERPT_MAX = 160;
 
 /**
  * R16: a session starts only when an op arrives after the draft was opened

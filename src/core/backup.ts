@@ -7,7 +7,7 @@ export const MAX_BACKUP_BYTES = 64 * 1024 * 1024;
 export const MAX_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
 
 export class BackupError extends Error {}
-const NOT_A_BACKUP = 'That file isn’t a Kansowriter backup';
+export const NOT_A_BACKUP = 'That file isn’t a Kansowriter backup';
 
 async function compress(bytes: Uint8Array): Promise<Uint8Array> {
   const out = new Response(new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream('deflate-raw')));
@@ -29,13 +29,7 @@ async function inflateCapped(bytes: Uint8Array, cap: number): Promise<Uint8Array
     }
     chunks.push(value);
   }
-  const out = new Uint8Array(total);
-  let o = 0;
-  for (const c of chunks) {
-    out.set(c, o);
-    o += c.byteLength;
-  }
-  return out;
+  return new Uint8Array(await new Blob(chunks as Uint8Array<ArrayBuffer>[]).arrayBuffer());
 }
 
 export async function encodeBackup(data: BackupData): Promise<Uint8Array> {

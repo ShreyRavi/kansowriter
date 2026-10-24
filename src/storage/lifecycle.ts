@@ -65,6 +65,8 @@ export function attachDraftSession(
   /** settles when the lock is actually free again (the request's callback has returned) */
   let held: Promise<unknown> = Promise.resolve();
   let disposeDone: Promise<void> | null = null;
+  /** writer whose history clearHistory is rewriting: timers and hide handlers must not flush it */
+  let clearing: DraftWriter | null = null;
   const safe = (f: () => void) => {
     try {
       f();
@@ -147,14 +149,16 @@ export function attachDraftSession(
   }
 
   const timer = setInterval(() => {
-    if (writer) void writer.flush(false);
+    if (writer && writer !== clearing) void writer.flush(false);
   }, BATCH_MS);
 
+  // an append landing after clear() renewed the epoch would turn the writer stale; edits typed
+  // meanwhile stay queued and are carried onto the rebuilt writer instead
   const onHide = () => {
-    if (writer && document.visibilityState === 'hidden') void writer.flush(true);
+    if (writer && writer !== clearing && document.visibilityState === 'hidden') void writer.flush(true);
   };
   const onPageHide = () => {
-    if (writer) void writer.flush(true);
+    if (writer && writer !== clearing) void writer.flush(true);
   };
   document.addEventListener('visibilitychange', onHide);
   window.addEventListener('pagehide', onPageHide);
@@ -217,6 +221,8 @@ export function attachDraftSession(
       }
     } finally {
       release?.();
+      // keep the disposing entry until the lock is really free, or a re-open sees 'other-tab'
+      await held.catch(() => {});
       bc?.close();
     }
   };
@@ -273,7 +279,20 @@ export function attachDraftSession(
       await w.flush(true);
       // lost the lock (handover/steal) or disposed while flushing: never rewrite history without it
       if (writer !== w || disposed || w.dirty || w.isStale) return false;
-      if (!(await clear(w, now))) return false;
+      clearing = w;
+      try {
+        if (!(await clear(w, now))) return false;
+      } finally {
+        clearing = null;
+      }
+      if (w.isStale && writer === w && !disposed) {
+        // something else flushed w during the clear (e.g. export) and hit the renewed epoch: w has
+        // already handed its full text back through onStale. Rebuilding now would show a writable
+        // editor beside that stale notice, so retire w and stay read-only; the text is never lost.
+        writer = null;
+        readOnly('error');
+        return true;
+      }
       let next: DraftWriter;
       try {
         next = await openWriter();

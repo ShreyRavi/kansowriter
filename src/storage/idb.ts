@@ -1,42 +1,46 @@
 import Dexie, { type Table } from 'dexie';
-import type { Op } from '../core/kop';
-import { apply } from '../core/kop';
-import { newEpoch, SNAPSHOT_EVERY, type DraftRecord, type Snapshot } from '../core/draft';
+import { Text } from '@codemirror/state';
+import { runsOf, type Op } from '../core/kop';
+import { newEpoch, SNAPSHOT_EVERY, type DraftMeta, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
 import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, StorageAdapter } from '../core/storage';
-import { Text } from '@codemirror/state';
-import { runsOf } from '../core/kop';
 
 /**
  * Replay on a rope: each op costs O(runs × log n) instead of copying the whole string, so a
- * novel-length history imports in seconds (string replay is ops × length). Throws on bad coverage.
+ * novel-length history loads and imports in seconds (string replay is ops × length). Stops at the
+ * first op that doesn't apply and returns the text so far with its index (null when all applied).
+ * `onSnapshot` gets op indexes counted from the start of `ops`.
  */
-function replayRope(base: string, ops: Op[], onSnapshot: (opIndex: number, text: Text) => void): Text {
+function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text: Text) => void): { doc: Text; failedAt: number | null } {
   let doc = Text.of(base.split('\n'));
-  ops.forEach((op, i) => {
+  for (let i = 0; i < ops.length; i++) {
+    let next = doc;
     let pos = 0;
-    for (const r of runsOf(op)) {
+    let ok = true;
+    for (const r of runsOf(ops[i]!)) {
       if (typeof r === 'string') {
-        doc = doc.replace(pos, pos, Text.of(r.split('\n')));
+        next = next.replace(pos, pos, Text.of(r.split('\n')));
         pos += r.length;
       } else if (r >= 0) pos += r;
-      else {
-        if (pos - r > doc.length) throw new Error('delete past end');
-        doc = doc.replace(pos, pos - r, Text.empty);
+      else if (pos - r > next.length) ok = false;
+      else next = next.replace(pos, pos - r, Text.empty);
+      if (!ok || pos > next.length) {
+        ok = false;
+        break;
       }
-      if (pos > doc.length) throw new Error('retain past end');
     }
-    if (pos !== doc.length) throw new Error('runs do not cover the document');
-    if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot(i + 1, doc);
-  });
-  return doc;
+    if (!ok || pos !== next.length) return { doc, failedAt: i };
+    doc = next;
+    if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot?.(i + 1, doc);
+  }
+  return { doc, failedAt: null };
 }
 
 /**
  * IndexedDB layout (R15, R20):
- *   drafts     id → DraftRecord {v, meta, sessions, head}
+ *   drafts     id → DraftRecord {v, meta, sessions, head, epoch}
  *   ops        [draftId, seq] → op         (append-only, one row per KOP op)
- *   snapshots  [draftId, opIndex] → text   (every SNAPSHOT_EVERY ops; opIndex 0 after clear-history)
+ *   snapshots  [draftId, opIndex] → text   (the opIndex-0 base plus only the newest every-SNAPSHOT_EVERY one)
  *   days       localDate → {B, peak, resetOffset}   (words-today ledger, source of truth)
  *   kv         settings
  * append() writes ops, draft meta and day deltas in ONE transaction, so tabs serialize through IDB.
@@ -97,16 +101,13 @@ export class IndexedDbAdapter implements StorageAdapter {
       const snap = await this.latestSnapshot(id, record.head);
       const ops = await this.loadOps(id, snap?.opIndex ?? 0);
       // A bad op must not make the whole draft unreadable: keep the last state that applied.
-      let text = snap?.text ?? '';
-      for (const op of ops) {
-        try {
-          text = apply(text, op);
-        } catch {
-          return { record, text, damaged: true };
-        }
-      }
-      return { record, text };
+      const { doc, failedAt } = replayRope(snap?.text ?? '', ops);
+      return failedAt === null ? { record, text: doc.toString() } : { record, text: doc.toString(), damaged: true };
     });
+  }
+
+  async getRecord(id: string): Promise<DraftRecord | undefined> {
+    return this.db.drafts.get(id);
   }
 
   private async latestSnapshot(id: string, head: number): Promise<Snapshot | null> {
@@ -218,14 +219,11 @@ export class IndexedDbAdapter implements StorageAdapter {
     const prepared = data.drafts.map((d) => {
       const base = d.snapshots.find((s) => s.opIndex === 0);
       let last: { opIndex: number; doc: Text } | null = null;
-      try {
-        const doc = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
-        const l = last as { opIndex: number; doc: Text } | null;
-        const snap: Snapshot | null = l ? { opIndex: l.opIndex, text: l.doc.toString() } : null;
-        return { d, base, text: doc.toString(), snap };
-      } catch {
-        return null;
-      }
+      const { doc, failedAt } = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
+      if (failedAt !== null) return null;
+      const l = last as { opIndex: number; doc: Text } | null;
+      const snap: Snapshot | null = l ? { opIndex: l.opIndex, text: l.doc.toString() } : null;
+      return { d, base, text: doc.toString(), snap };
     });
     return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots, this.db.days], async () => {
       const r: ImportResult = { added: 0, copies: 0, skipped: 0, damaged: 0 };
@@ -243,8 +241,10 @@ export class IndexedDbAdapter implements StorageAdapter {
           continue;
         }
         const { d, base, text, snap } = p;
-        let id = d.record.id;
-        let meta = d.record.meta;
+        const rec = d.record;
+        let id = rec.id;
+        // rebuild from known fields only: unknown keys in the file never reach storage
+        let meta: DraftMeta = { title: rec.meta.title, excerpt: rec.meta.excerpt, words: rec.meta.words };
         if (await this.db.drafts.get(id)) {
           if ((await this.alreadyHere(id, d.ops, text)) || (await localTexts()).has(text)) {
             r.skipped++;
@@ -258,11 +258,21 @@ export class IndexedDbAdapter implements StorageAdapter {
         (texts as Set<string> | null)?.add(text);
         const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
         if (snap) snaps.push({ draftId: id, ...(snap as Snapshot) });
-        await this.db.drafts.add({ ...d.record, id, meta, head: d.ops.length, epoch: newEpoch() });
+        await this.db.drafts.add({
+          v: 1,
+          id,
+          createdAt: rec.createdAt,
+          updatedAt: rec.updatedAt,
+          meta,
+          sessions: rec.sessions.map(({ opIndex, at, tzOffset }) => ({ opIndex, at, tzOffset })),
+          head: d.ops.length,
+          epoch: newEpoch(),
+        });
         await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: id, seq, op })));
         if (snaps.length) await this.db.snapshots.bulkAdd(snaps);
       }
-      for (const day of data.days) if (!(await this.db.days.get(day.key))) await this.db.days.add(day);
+      for (const { key, B, peak, resetOffset } of data.days)
+        if (!(await this.db.days.get(key))) await this.db.days.add({ key, B, peak, resetOffset });
       return r;
     });
   }
@@ -283,10 +293,6 @@ export class IndexedDbAdapter implements StorageAdapter {
 
   async getSetting<T>(key: string): Promise<T | undefined> {
     return (await this.db.kv.get(key))?.value as T | undefined;
-  }
-
-  async setSetting<T>(key: string, value: T): Promise<void> {
-    await this.db.kv.put({ key, value });
   }
 
   async patchSetting(key: string, patch: Record<string, unknown>): Promise<void> {

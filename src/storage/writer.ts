@@ -1,7 +1,7 @@
 import { apply, compose, insertionOf, makeOp, normalize, type Op, type Run } from '../core/kop';
 import { deriveMeta, needsNewSession, shouldSnapshot, type DraftRecord, type Session, type Snapshot } from '../core/draft';
 import { countWords, dayKey, wordDelta } from '../core/words';
-import type { StorageAdapter } from '../core/storage';
+import type { LoadedDraft, StorageAdapter } from '../core/storage';
 
 export const MERGE_WINDOW_MS = 1000;
 export const BATCH_MS = 500;
@@ -283,7 +283,7 @@ export class DraftWriter {
     else this.stale = true;
   }
 
-  /** Text that storage has committed (for tests and diagnostics). */
+  /** Text that storage has committed (at `head`): what clear-history rebases on (EditorShell passes it). */
   get savedText(): string {
     return this.committedText;
   }
@@ -300,14 +300,24 @@ export class DamagedDraftError extends Error {
   }
 }
 
-/** Load a draft and build its writer. Damaged drafts are never written on top of (repair first). */
+/**
+ * Load a draft and build its writer. Damaged drafts are never written on top of (repair first).
+ * `preloaded` (a draft the caller already replayed) is reused only while storage's record still
+ * has the same head and epoch, so a draft opens with one replay but never from a stale copy.
+ */
 export async function openDraftWriter(
   storage: StorageAdapter,
   id: string,
   events: WriterEvents,
   tzOffset?: () => number,
+  preloaded?: LoadedDraft,
 ): Promise<DraftWriter> {
-  const loaded = await storage.loadDraft(id);
+  let loaded: LoadedDraft | null = null;
+  if (preloaded && preloaded.record.id === id) {
+    const rec = await storage.getRecord(id);
+    if (rec && rec.head === preloaded.record.head && rec.epoch === preloaded.record.epoch) loaded = { ...preloaded, record: rec };
+  }
+  loaded ??= await storage.loadDraft(id);
   if (!loaded) throw new Error(`Draft ${id} not found`);
   if (loaded.damaged) throw new DamagedDraftError(loaded.text);
   return new DraftWriter(storage, loaded.record, loaded.text, events, tzOffset);

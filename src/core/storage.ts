@@ -45,6 +45,8 @@ export interface StorageAdapter {
   listDrafts(): Promise<DraftRecord[]>;
   createDraft(record: DraftRecord): Promise<void>;
   loadDraft(id: string): Promise<LoadedDraft | null>;
+  /** the draft's record alone (no replay): a cheap check that a loaded draft is still current */
+  getRecord(id: string): Promise<DraftRecord | undefined>;
   loadOps(id: string, from?: number): Promise<Op[]>;
   loadSnapshots(id: string): Promise<Snapshot[]>;
   append(batch: AppendBatch): Promise<AppendResult>;
@@ -65,7 +67,6 @@ export interface StorageAdapter {
   exportAll(): Promise<BackupData>;
   importAll(data: BackupData): Promise<ImportResult>;
   getSetting<T>(key: string): Promise<T | undefined>;
-  setSetting<T>(key: string, value: T): Promise<void>;
   /** merge `patch` into the stored object in one transaction (tabs never write back stale fields) */
   patchSetting(key: string, patch: Record<string, unknown>): Promise<void>;
 }

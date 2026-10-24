@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
-import { describe, expect, it, beforeEach } from 'vitest';
+import { describe, expect, it, beforeEach, vi } from 'vitest';
 import { IndexedDbAdapter } from './idb';
-import { DraftWriter, type Change } from './writer';
+import { DraftWriter, openDraftWriter, type Change } from './writer';
 import { newDraft } from '../core/draft';
 import { wordsToday, dayKey } from '../core/words';
 import { replay } from '../core/draft';
@@ -336,6 +336,42 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect((await target.loadDraft('d1'))!.text).toBe('y'.repeat(501));
   });
 
+  it('import stores only known fields, never extra keys from the file', async () => {
+    const rec = { ...newDraft('x1', T0), extra: 'r', meta: { title: 't', excerpt: '', words: 1, extra: 'm' } };
+    rec.sessions = [{ opIndex: 0, at: T0, tzOffset: 0, extra: 's' } as never];
+    const res = await db.importAll({
+      format: 'kansobackup',
+      v: 1,
+      exportedAt: T0,
+      drafts: [{ record: rec, ops: [[0, 0, 'hi']], snapshots: [] }],
+      days: [{ key: '2026-10-23', B: 1, peak: 1, resetOffset: 0, extra: 'd' } as never],
+    });
+    expect(res.added).toBe(1);
+    const stored = (await db.db.drafts.get('x1'))!;
+    expect(Object.keys(stored).sort()).toEqual(['createdAt', 'epoch', 'head', 'id', 'meta', 'sessions', 'updatedAt', 'v']);
+    expect(Object.keys(stored.meta).sort()).toEqual(['excerpt', 'title', 'words']);
+    expect(stored.sessions).toEqual([{ opIndex: 0, at: T0, tzOffset: 0 }]);
+    expect(await db.db.days.get('2026-10-23')).toEqual({ key: '2026-10-23', B: 1, peak: 1, resetOffset: 0 });
+  });
+
+  it('openDraftWriter reuses a preloaded draft while head and epoch match, else reloads', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'one', T0);
+    await w.flush(true, T0 + 500);
+    const events = { onStale: () => {}, onCommit: () => {} };
+    const preloaded = (await db.loadDraft('d1'))!;
+    const load = vi.spyOn(db, 'loadDraft');
+    const a = await openDraftWriter(db, 'd1', events, () => 0, preloaded);
+    expect(load).not.toHaveBeenCalled();
+    expect(a.currentText).toBe('one');
+    typeWord(w, ' two', T0 + 5000);
+    await w.flush(true, T0 + 9000); // head moved past the preloaded copy
+    const b = await openDraftWriter(db, 'd1', events, () => 0, preloaded);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(b.currentText).toBe('one two');
+    expect(b.head).toBe(2);
+  });
+
   it('rejects files that are not backups', async () => {
     await expect(decodeBackup(new TextEncoder().encode('nope'))).rejects.toThrow('isn’t a Kansowriter backup');
   });
@@ -343,7 +379,7 @@ describe('DraftWriter + IndexedDbAdapter', () => {
 
 describe('settings', () => {
   it('patchSetting merges, so a stale tab cannot write back fields it did not change (red team)', async () => {
-    await db.setSetting('settings', { theme: 'night', lastExportedAt: 1 });
+    await db.patchSetting('settings', { theme: 'night', lastExportedAt: 1 });
     await Promise.all([db.patchSetting('settings', { lastExportedAt: 99 }), db.patchSetting('settings', { focus: 'off' })]);
     expect(await db.getSetting('settings')).toEqual({ theme: 'night', lastExportedAt: 99, focus: 'off' });
   });

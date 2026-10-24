@@ -49,7 +49,7 @@ afterEach(async () => {
   for (const s of sessions.splice(0)) await s.dispose().catch(() => {});
 });
 
-function open(tag: string, log: string[]) {
+function open(tag: string, log: string[], clear?: (w: DraftWriter, now: number) => Promise<boolean>) {
   const openWriter = async () => {
     const loaded = (await db.loadDraft('d1'))!;
     return new DraftWriter(db, loaded.record, loaded.text, {
@@ -57,12 +57,31 @@ function open(tag: string, log: string[]) {
       onCommit: () => {},
     });
   };
-  const s = attachDraftSession('d1', openWriter, {
-    onWritable: () => log.push(`${tag}:writable`),
-    onReadOnly: (r) => log.push(`${tag}:readonly:${r}`),
-  });
+  const s = attachDraftSession(
+    'd1',
+    openWriter,
+    {
+      onWritable: () => log.push(`${tag}:writable`),
+      onReadOnly: (r) => log.push(`${tag}:readonly:${r}`),
+    },
+    clear,
+  );
   sessions.push(s);
   return s;
+}
+
+const clearInDb = async (w: DraftWriter, now: number) => (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok;
+const count = (log: string[], prefix: string) => log.filter((l) => l.startsWith(prefix)).length;
+
+/** Put the holder's writer into the stale state: one append is refused, unsaved text handed back. */
+async function makeStale(s: SessionHandle) {
+  const w = s.writer!;
+  const spy = vi.spyOn(db, 'append').mockResolvedValueOnce({ ok: false, reason: 'stale' });
+  w.push({ runs: ['gone'], at: Date.now(), kind: 'other' });
+  await w.flush(true);
+  spy.mockRestore();
+  expect(w.isStale).toBe(true);
+  return w;
 }
 
 /** Simulate a frozen holder: it never receives handover requests. */
@@ -378,5 +397,230 @@ describe('attachDraftSession (single writer, R23)', () => {
     expect(s.writer).toBeNull();
     expect(log).toContain('readonly:error');
     expect((await db.loadDraft('d1'))!.text).toBe('text');
+  });
+});
+
+/** Web Locks whose request promise settles a while after the callback returns, as in browsers. */
+class SlowReleaseLocks extends FakeLocks {
+  override request(name: string, opts: LockOptions, cb: (lock: Lock | null) => Promise<unknown>): Promise<unknown> {
+    return super.request(name, opts, async (lock) => {
+      const v = await cb(lock);
+      await new Promise((r) => setTimeout(r, 30));
+      return v;
+    });
+  }
+}
+
+describe('attachDraftSession state matrix', () => {
+  it('re-open after dispose becomes writable even when the lock frees late', async () => {
+    Object.defineProperty(navigator, 'locks', { value: new SlowReleaseLocks(), configurable: true });
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    await a.dispose();
+    const b = open('b', log);
+    await until(() => b.writer !== null);
+    expect(log).not.toContain('b:readonly:other-tab');
+  });
+
+  it('clearHistory: hide/pagehide during the clear never flushes the old writer (no stale beside a writable)', async () => {
+    const log: string[] = [];
+    let gate!: () => void;
+    const s = open('a', log, async (w, now) => {
+      const ok = await clearInDb(w, now);
+      await new Promise<void>((r) => (gate = r));
+      return ok;
+    });
+    await until(() => s.writer !== null);
+    const w = s.writer!;
+    w.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof gate === 'function');
+    w.push({ runs: [4, ' more'], at: Date.now(), kind: 'other' });
+    window.dispatchEvent(new Event('pagehide'));
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    await new Promise((r) => setTimeout(r, 20));
+    gate();
+    expect(await p).toBe(true);
+    expect(count(log, 'a:stale:')).toBe(0);
+    expect(count(log, 'a:writable')).toBe(2);
+    await s.writer!.flush(true);
+    expect((await db.loadDraft('d1'))!.text).toBe('base more');
+  });
+
+  it('clearHistory: a writer flushed elsewhere during the clear goes stale once and is retired, not rebuilt', async () => {
+    const log: string[] = [];
+    let gate!: () => void;
+    const s = open('a', log, async (w, now) => {
+      const ok = await clearInDb(w, now);
+      await new Promise<void>((r) => (gate = r));
+      return ok;
+    });
+    await until(() => s.writer !== null);
+    const w = s.writer!;
+    w.push({ runs: ['base'], at: Date.now(), kind: 'other' });
+    const p = s.clearHistory();
+    await until(() => typeof gate === 'function');
+    w.push({ runs: [4, ' more'], at: Date.now(), kind: 'other' });
+    await w.flush(true); // e.g. export flushing the writer: hits the renewed epoch
+    gate();
+    expect(await p).toBe(true);
+    expect(log).toContain('a:stale:base more'); // nothing lost: the full text was handed back
+    expect(count(log, 'a:writable')).toBe(1);
+    expect(log).toContain('a:readonly:error');
+    expect(s.writer).toBeNull();
+  });
+
+  it('queued-closed × handover: flush(true) commits the queue and the new tab loads it', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['queued'], at: Date.now(), kind: 'other' });
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(b.writer!.currentText).toBe('queued');
+    expect(count(log, 'a:stale:')).toBe(0);
+  });
+
+  it('stale × handover: no second onStale; the new tab loads what storage holds', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    await makeStale(a);
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(b.writer!.currentText).toBe('');
+    expect(count(log, 'a:stale:')).toBe(1);
+  });
+
+  it('queued-closed × steal: abandon hands back the queued ops and goes read-only stolen', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const aw = a.writer!;
+    aw.flush = () => new Promise(() => {}); // frozen: the queue never reaches storage
+    aw.push({ runs: ['queued'], at: Date.now(), kind: 'other' });
+    freezeHolders();
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(log).toContain('a:stale:queued');
+    expect(log).toContain('a:readonly:stolen');
+  });
+
+  it('failing-retry × steal: hands back the current text and never appends again', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const aw = a.writer!;
+    vi.spyOn(db, 'append').mockRejectedValue(new Error('QuotaExceededError'));
+    aw.push({ runs: ['retrying'], at: Date.now(), kind: 'other' });
+    await aw.flush(true);
+    expect(aw.dirty).toBe(true);
+    freezeHolders();
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(log).toContain('a:stale:retrying');
+    vi.restoreAllMocks();
+    const append = vi.spyOn(db, 'append');
+    await aw.flush(true);
+    expect(append).not.toHaveBeenCalled();
+  });
+
+  it('stale × steal: no second onStale', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    await makeStale(a);
+    freezeHolders();
+    const b = open('b', log);
+    await until(() => log.includes('b:readonly:other-tab'));
+    await b.takeOver();
+    await until(() => b.writer !== null);
+    expect(count(log, 'a:stale:')).toBe(1);
+  });
+
+  it('clean × dispose: no append, and re-opening is writable', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const append = vi.spyOn(db, 'append');
+    await a.dispose();
+    expect(append).not.toHaveBeenCalled();
+    const b = open('b', log);
+    await until(() => b.writer !== null);
+  });
+
+  it('queued-closed × dispose: the flush commits the queue and re-opening loads it', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['queued'], at: Date.now(), kind: 'other' });
+    await a.dispose();
+    const b = open('b', log);
+    await until(() => b.writer !== null);
+    expect(b.writer!.currentText).toBe('queued');
+  });
+
+  it('stale × dispose: no append, no second onStale, and the lock is released', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    await makeStale(a);
+    const append = vi.spyOn(db, 'append');
+    await a.dispose();
+    expect(append).not.toHaveBeenCalled();
+    expect(count(log, 'a:stale:')).toBe(1);
+    const b = open('b', log);
+    await until(() => b.writer !== null);
+  });
+
+  it('clean × clearHistory: clears, rebuilds, onWritable twice, no onStale', async () => {
+    const log: string[] = [];
+    const s = open('a', log, clearInDb);
+    await until(() => s.writer !== null);
+    s.writer!.push({ runs: ['saved'], at: Date.now(), kind: 'other' });
+    await s.writer!.flush(true);
+    expect(await db.loadOps('d1')).toHaveLength(1);
+    expect(await s.clearHistory()).toBe(true);
+    expect(await db.loadOps('d1')).toHaveLength(0);
+    expect((await db.loadDraft('d1'))!.text).toBe('saved');
+    expect(count(log, 'a:writable')).toBe(2);
+    expect(count(log, 'a:stale:')).toBe(0);
+  });
+
+  it('failing-retry × clearHistory: refuses, history untouched, writer kept dirty', async () => {
+    const log: string[] = [];
+    let cleared = false;
+    const s = open('a', log, async () => ((cleared = true), true));
+    await until(() => s.writer !== null);
+    const w = s.writer!;
+    vi.spyOn(db, 'append').mockRejectedValue(new Error('QuotaExceededError'));
+    w.push({ runs: ['retrying'], at: Date.now(), kind: 'other' });
+    await w.flush(true);
+    expect(await s.clearHistory()).toBe(false);
+    expect(cleared).toBe(false);
+    expect(s.writer).toBe(w);
+    expect(w.dirty).toBe(true);
+    expect(count(log, 'a:writable')).toBe(1);
+  });
+
+  it('stale × clearHistory: refuses, history untouched, no rebuild', async () => {
+    const log: string[] = [];
+    let cleared = false;
+    const s = open('a', log, async () => ((cleared = true), true));
+    await until(() => s.writer !== null);
+    await makeStale(s);
+    expect(await s.clearHistory()).toBe(false);
+    expect(cleared).toBe(false);
+    expect(count(log, 'a:writable')).toBe(1);
   });
 });
