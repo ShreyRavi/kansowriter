@@ -75,3 +75,34 @@ test('dirty (saves failing) × browser Back: the notice holds Back on the editor
   await expect(landing(page)).toBeVisible();
   expect(path(page)).toBe('/about');
 });
+
+test('dirty (saves failing) × browser Back → Stay: the URL stays on the editor and Back is guarded again', async ({ page }) => {
+  await startFromAbout(page);
+  await failIdb(page, ['add', 'put'], 'ops');
+  await draft(page).pressSequentially(' second');
+  await expect(savingError(page)).toBeVisible({ timeout: 10_000 });
+  await page.goBack();
+  await expect(unsavedLeave(page)).toBeVisible();
+  await expect.poll(() => path(page)).toBe('/');
+  await page.getByRole('button', { name: 'Stay' }).click();
+  await expect(unsavedLeave(page)).toHaveCount(0);
+  expect(path(page)).toBe('/');
+  await expect(draft(page)).toContainText('first words second');
+  // the guard re-pushed the editor's URL, so Back is still there to press, and it asks again
+  await page.goBack();
+  await expect(unsavedLeave(page)).toBeVisible();
+  await expect.poll(() => path(page)).toBe('/');
+  await expect(draft(page)).toContainText('first words second');
+  await expect(landing(page)).toHaveCount(0);
+});
+
+test('clean × browser Back then Forward: Forward returns to the editor', async ({ page }) => {
+  await startFromAbout(page);
+  await page.goBack();
+  await expect(landing(page)).toBeVisible();
+  expect(path(page)).toBe('/about');
+  await page.goForward();
+  await expect(draft(page)).toHaveText('first words');
+  await expect(draft(page)).toHaveAttribute('contenteditable', 'true');
+  expect(path(page)).toBe('/');
+});

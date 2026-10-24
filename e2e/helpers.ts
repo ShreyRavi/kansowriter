@@ -46,6 +46,7 @@ export const savedState = (page: Page) =>
     const tile = content?.cmTile ?? content?.cmView;
     const view = tile?.root?.view ?? tile?.rootView?.view ?? tile?.view;
     const editor = view ? view.state.doc.toString() : null;
+    const title = document.querySelector('.header .title')?.textContent ?? null;
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       const q = indexedDB.open('kansowriter');
       q.onsuccess = () => resolve(q.result);
@@ -57,7 +58,7 @@ export const savedState = (page: Page) =>
         q.onsuccess = () => resolve(q.result as T[]);
         q.onerror = () => reject(q.error);
       });
-    type Rec = { id: string; head: number; updatedAt: number };
+    type Rec = { id: string; head: number; updatedAt: number; meta?: { title?: string } };
     type Run = number | string;
     try {
       const [drafts, ops, snaps] = await Promise.all([
@@ -81,16 +82,25 @@ export const savedState = (page: Page) =>
           }
           text = out;
         }
-        return { id: d.id, head: d.head, updatedAt: d.updatedAt, ops: mine.length, text };
+        return { id: d.id, head: d.head, updatedAt: d.updatedAt, title: d.meta?.title ?? '', ops: mine.length, text };
       });
-      return { editor, saved };
+      return { editor, title, saved };
     } finally {
       db.close();
     }
   });
 
 /**
- * Wait until storage holds exactly what the editor shows (nothing unsaved: the open word closes after
+ * The draft the editor has open: the one being written is the most recently updated, and its saved
+ * title is what the header shows (set from each commit), so match the title first, then take the newest.
+ */
+export function openDraftOf<D extends { title: string; updatedAt: number }>(header: string | null, saved: D[]): D | undefined {
+  const named = saved.filter((d) => (d.title || 'Untitled') === header);
+  return (named.length ? named : saved).reduce<D | undefined>((a, d) => (!a || d.updatedAt > a.updatedAt ? d : a), undefined);
+}
+
+/**
+ * Wait until storage holds exactly what the open draft's editor shows (nothing unsaved: the open word closes after
  * the 1 s merge window and the 500 ms batch writes it), seen on two polls in a row ~300 ms apart so a
  * keystroke still being processed can't slip past.
  */
@@ -99,8 +109,9 @@ export async function settle(page: Page) {
   await expect
     .poll(
       async () => {
-        const { editor, saved } = await savedState(page);
-        matches = editor !== null && saved.some((d) => d.text === editor) ? matches + 1 : 0;
+        const { editor, title, saved } = await savedState(page);
+        const open = openDraftOf(title, saved);
+        matches = editor !== null && open?.text === editor ? matches + 1 : 0;
         return matches;
       },
       { message: 'the editor text never reached IndexedDB', timeout: 15_000, intervals: [300] },

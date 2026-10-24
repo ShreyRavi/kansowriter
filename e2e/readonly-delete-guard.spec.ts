@@ -3,8 +3,9 @@
 //   fails_when=deleteDraft's "only the holding tab" guard (session/writer check) is dropped or inverted, so a read-only tab deletes the draft;
 //   why_new=app.spec.ts deletes only from the writing tab and checks the read-only tab's takeover, never delete from it; seam=none;
 //   no_claim=two tabs of one browser context stand in for two windows (BroadcastChannel/Web Locks real, nothing mocked)
+import { readFileSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
-import { mod, runCommand, settle, startWriting } from './helpers';
+import { mod, runCommand, savedState, settle, startWriting } from './helpers';
 
 test('a read-only tab refuses to delete the draft another tab is writing', async ({ page, context }) => {
   const editor = await startWriting(page);
@@ -26,4 +27,39 @@ test('a read-only tab refuses to delete the draft another tab is writing', async
   await second.close();
   await page.reload();
   await expect(page.getByRole('textbox', { name: 'Draft' })).toContainText('still mine and saved');
+});
+
+// Value: protects=a read-only tab exports what the writing tab committed (storage, not a view still catching up)
+//   and refuses to rename a draft it doesn't hold; fails_when=exportText reads the read-only view, or rename's
+//   writer guard is dropped (the read-only view would dispatch into a draft another tab writes);
+//   why_new=export/rename were only driven from the writing tab; seam=none; no_claim=real file-system saving
+test('a read-only tab exports what the writing tab committed and refuses to rename', async ({ page, context }) => {
+  const editor = await startWriting(page);
+  await editor.pressSequentially('Shared title');
+  await settle(page);
+  const second = await context.newPage();
+  await second.goto('/');
+  await expect(second.getByText('Open in another tab.')).toBeVisible();
+
+  await editor.pressSequentially(' and more words');
+  await settle(page);
+  const committed = (await savedState(page)).editor!;
+  expect(committed).toBe('Shared title and more words');
+
+  await second.keyboard.press(`${await mod(second)}+k`);
+  const download = second.waitForEvent('download');
+  await runCommand(second, 'export markdown', /Export as Markdown/);
+  const file = await download;
+  expect(file.suggestedFilename()).toBe('Shared title and more words.md');
+  expect(readFileSync((await file.path())!, 'utf8')).toBe(committed);
+
+  await runCommand(second, 'rename', /Rename draft/);
+  const field = second.getByRole('textbox', { name: 'Draft title' });
+  await field.fill('Taken over');
+  await field.press('Enter');
+  await expect(second.getByRole('option', { name: /Rename draft/ })).toContainText('Open this draft here first to rename it');
+  await expect(editor).toHaveText(committed);
+  await expect(page.locator('.header .title')).toHaveText('Shared title and more words');
+  await settle(page);
+  expect((await savedState(page)).editor).toBe(committed);
 });
