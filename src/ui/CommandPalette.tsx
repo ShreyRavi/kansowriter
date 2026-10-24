@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { Command } from 'cmdk';
 import { useStore } from './store';
-import { clamp, LIMITS, resolveTheme, TYPEFACES, type Settings, type Typeface } from './settings';
+import { clamp, LIMITS, resolveTheme, TYPEFACES, type Settings, type ThemeChoice, type Typeface } from './settings';
+
+const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Light', night: 'Dark' };
 import { isMac } from './platform';
 import { SearchIcon } from './icons';
 import { useDialog } from './useDialog';
@@ -19,7 +21,6 @@ export interface PaletteActions {
   /** resolves to an error label when the draft could not be deleted */
   deleteDraft(): Promise<string | null>;
   resetToday(): Promise<void>;
-  toggleTheme(): void;
 }
 
 const mod = () => (isMac() ? '⌘' : 'Ctrl ');
@@ -37,7 +38,7 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
   const [query, setQuery] = useState('');
   const [editing, setEditing] = useState<NumKey | 'rename' | null>(null);
   const [draftValue, setDraftValue] = useState('');
-  const [expanded, setExpanded] = useState<'typeface' | 'hide' | null>(null);
+  const [expanded, setExpanded] = useState<'theme' | 'typeface' | 'hide' | null>(null);
   const [confirm, setConfirm] = useState<'delete' | 'clear' | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
@@ -83,6 +84,10 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
   // steppers must not take focus from the field (its blur commits and closes the editor)
   const keepFocus = (e: { preventDefault(): void }) => e.preventDefault();
 
+  // System follows the device's light/dark setting; Light and Dark override it (⌘⇧N flips between them)
+  const themeCycle: ThemeChoice[] = ['system', 'paper', 'night'];
+  const themeLabel =
+    settings.theme === 'system' ? `System (${resolveTheme('system') === 'night' ? 'dark' : 'light'})` : THEME_LABELS[settings.theme];
   const hideLabel = settings.hideChrome === 'never' ? 'Never' : `After ${settings.hideChrome} s`;
   const hideCycle: Settings['hideChrome'][] = ['never', 3, 10];
   const faces = Object.keys(TYPEFACES) as Typeface[];
@@ -131,9 +136,10 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
             const input = inputRef.current;
             if (input && document.activeElement === input && input.selectionStart !== input.value.length) return;
             const v = (ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-value') ?? '').toLowerCase();
-            if (v === 'typeface' || v === 'hide interface when typing') {
+            const rows: Record<string, 'theme' | 'typeface' | 'hide'> = { theme: 'theme', typeface: 'typeface', 'hide interface when typing': 'hide' };
+            if (rows[v]) {
               e.preventDefault();
-              setExpanded(v === 'typeface' ? 'typeface' : 'hide');
+              setExpanded(rows[v]);
             }
           }}
         >
@@ -152,7 +158,29 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
             <Command.Empty>No commands match.</Command.Empty>
 
             <Command.Group heading="Appearance">
-              <Item label="Night theme" value={onOff(resolveTheme(settings.theme) === 'night')} kbd={`${mod()}⇧N`} onSelect={actions.toggleTheme} />
+              <Command.Item
+                value="Theme"
+                keywords={['dark', 'light', 'night', 'paper', 'mode', 'system']}
+                onSelect={() => update({ theme: themeCycle[(themeCycle.indexOf(settings.theme) + 1) % themeCycle.length]! })}
+              >
+                <span>Theme</span>
+                <Val value={themeLabel} kbd={`${mod()}⇧N`} />
+              </Command.Item>
+              {expanded === 'theme' && (
+                <Choices
+                  options={themeCycle.map((t) => ({ id: t, label: THEME_LABELS[t] }))}
+                  current={settings.theme}
+                  onPick={(t) => {
+                    update({ theme: t as ThemeChoice });
+                    setExpanded(null);
+                    backToSearch();
+                  }}
+                  onClose={() => {
+                    setExpanded(null);
+                    backToSearch();
+                  }}
+                />
+              )}
               <Command.Item value="Text size" onSelect={() => startEdit('textSize')}>
                 <span>Text size</span>
                 {numField('textSize', ' px')}

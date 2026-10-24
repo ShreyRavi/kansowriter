@@ -252,7 +252,6 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         await refreshToday();
         broadcast({ type: 'committed', draftId });
       },
-      toggleTheme,
     }),
     [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast, toggleTheme],
   );

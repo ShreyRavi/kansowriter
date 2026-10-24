@@ -69,12 +69,18 @@ test.describe('first visit and writing', () => {
 });
 
 test.describe('palette, sidebar, tabs', () => {
-  test('⌘K palette toggles night theme, and the choice survives reload', async ({ page }) => {
+  test('palette Theme setting: System → Light → Dark, and the choice survives reload', async ({ page }) => {
+    await page.emulateMedia({ colorScheme: 'light' });
     await startWriting(page);
     await page.keyboard.press(`${await mod(page)}+k`);
     const dialog = page.getByRole('dialog', { name: 'Command palette' });
     await expect(dialog).toBeVisible();
-    await runCommand(page, 'night', /Night theme/);
+    const row = page.getByRole('option', { name: /^Theme/ });
+    await expect(row).toContainText('System (light)');
+    await runCommand(page, 'dark mode', /Theme/); // search finds it by "dark"
+    await expect(row).toContainText('Light');
+    await runCommand(page, 'theme', /Theme/);
+    await expect(row).toContainText('Dark');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'night');
     await page.keyboard.press('Escape');
     await expect(dialog).toBeHidden();
@@ -151,6 +157,21 @@ test.describe('document commands and failure paths', () => {
     await page.keyboard.press('Escape');
     await expect(editor).toContainText('Dear Sam, it has been a while.');
     await expect(page.locator('.header .title')).toHaveText('Letter to Sam', { timeout: 5000 });
+  });
+
+  test('→ on Theme offers System / Light / Dark; System follows the device again', async ({ page, isMobile }) => {
+    test.skip(!!isMobile, 'keyboard path');
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await startWriting(page);
+    await page.keyboard.press(`${await mod(page)}+Shift+n`); // explicit override: light
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'paper');
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await page.getByPlaceholder('Search commands and settings').fill('theme');
+    await expect(page.locator('[cmdk-item][data-selected="true"]')).toHaveText(/Theme/);
+    await page.keyboard.press('ArrowRight');
+    await page.locator('.choices').getByRole('button', { name: 'System' }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'night'); // device is dark
+    await expect(page.getByRole('option', { name: /^Theme/ })).toContainText('System (dark)');
   });
 
   test('Escape in an inline field cancels the edit and keeps the palette open', async ({ page, isMobile }) => {

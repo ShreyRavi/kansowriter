@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "npm run tokens && tsc -p tsconfig.json && vite build",
-    "preview": "vite preview --port 4173",
+    "preview": "vite preview --port 4317 --strictPort",
     "tokens": "tsx scripts/gen-tokens.ts",
     "tokens:check": "tsx scripts/gen-tokens.ts --check",
     "typecheck": "tsc -p tsconfig.json",
