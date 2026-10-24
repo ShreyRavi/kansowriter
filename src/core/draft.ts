@@ -115,3 +115,15 @@ export function opTimes(sessions: Session[], ops: Op[]): number[] {
 export function shouldSnapshot(head: number): boolean {
   return head > 0 && head % SNAPSHOT_EVERY === 0;
 }
+
+/**
+ * Rename (palette): the title is the first line when it's an ATX heading; replace just that
+ * heading. Otherwise the draft has no heading yet, so insert one above the text (never
+ * overwrite the writer's first line).
+ */
+export function renameChange(doc: string, title: string): { from: number; to: number; insert: string } {
+  const name = title.trim() || 'Untitled';
+  const m = /^(\s*)((#{1,6})(?: [^\n]*)?)(?=\n|$)/.exec(doc);
+  if (m) return { from: m[1]!.length, to: m[1]!.length + m[2]!.length, insert: `${m[3]} ${name}` };
+  return { from: 0, to: 0, insert: doc.trim() ? `# ${name}\n\n` : `# ${name}` };
+}

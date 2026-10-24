@@ -75,10 +75,20 @@ export function App() {
     const t = setTimeout(() => setSlow(true), 1500);
     return () => clearTimeout(t);
   }, []);
+  const [bootError, setBootError] = useState(false);
   const onReady = useCallback((list: DraftRecord[]) => setInitial(list), []);
+  const onBootError = useCallback(() => setBootError(true), []);
   return (
-    <StoreProvider onReady={onReady}>
-      {initial ? (
+    <StoreProvider onReady={onReady} onBootError={onBootError}>
+      {bootError ? (
+        <main className="boot ui">
+          <h1 className="sr-only">Kansowriter</h1>
+          <p role="alert">Couldn’t open your saved drafts. They are still on this device.</p>
+          <button type="button" className="text-btn" onClick={() => location.reload()}>
+            Try again
+          </button>
+        </main>
+      ) : initial ? (
         <Router initial={initial} />
       ) : (
         <div className="boot" aria-busy="true">

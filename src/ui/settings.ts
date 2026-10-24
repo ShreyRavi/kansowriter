@@ -55,8 +55,45 @@ export function resolveTheme(choice: ThemeChoice): 'paper' | 'night' {
   return typeof matchMedia !== 'undefined' && matchMedia('(prefers-color-scheme: dark)').matches ? 'night' : 'paper';
 }
 
+const pickOf = <T,>(x: unknown, allowed: readonly T[], fallback: T): T => (allowed.includes(x as T) ? (x as T) : fallback);
+const numIn = (x: unknown, lim: { min: number; max: number }, fallback: number) => (typeof x === 'number' && Number.isFinite(x) ? clamp(x, lim) : fallback);
+
+/** Stored settings come from an older version or another tab: keep only valid values. */
+export function sanitizeSettings(raw: unknown): Settings {
+  const s = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  const d = DEFAULTS;
+  return {
+    theme: pickOf(s.theme, ['system', 'paper', 'night'] as const, d.theme),
+    textSize: numIn(s.textSize, LIMITS.textSize, d.textSize),
+    lineWidth: numIn(s.lineWidth, LIMITS.lineWidth, d.lineWidth),
+    typeface: pickOf(s.typeface, Object.keys(TYPEFACES) as Typeface[], d.typeface),
+    typewriter: typeof s.typewriter === 'boolean' ? s.typewriter : d.typewriter,
+    focus: pickOf(s.focus, ['off', 'paragraph', 'sentence'] as const, d.focus),
+    hideChrome: pickOf(s.hideChrome, ['never', 3, 10] as const, d.hideChrome),
+    goal: numIn(s.goal, LIMITS.goal, d.goal),
+    showProgress: typeof s.showProgress === 'boolean' ? s.showProgress : d.showProgress,
+    lastExportedAt: typeof s.lastExportedAt === 'number' && Number.isFinite(s.lastExportedAt) ? s.lastExportedAt : null,
+    safariHintDismissed: s.safariHintDismissed === true,
+  };
+}
+
+/** The explicit theme saved synchronously by applyTheme (wins over a not-yet-committed IDB write). */
+export function storedThemeChoice(): ThemeChoice | null {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return v === 'paper' || v === 'night' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Browser chrome color per theme (matches --paper / --night ground in DESIGN.md). */
+const THEME_COLOR = { paper: '#F5F0E6', night: '#1B1917' } as const;
+
 export function applyTheme(choice: ThemeChoice): void {
-  document.documentElement.dataset.theme = resolveTheme(choice);
+  const resolved = resolveTheme(choice);
+  document.documentElement.dataset.theme = resolved;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_COLOR[resolved]);
   try {
     if (choice === 'system') localStorage.removeItem(THEME_KEY);
     else localStorage.setItem(THEME_KEY, choice);

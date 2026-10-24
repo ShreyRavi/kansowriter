@@ -3,7 +3,7 @@ import type { EditorView } from '@codemirror/view';
 import { createEditor, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
 import { attachDraftSession, type SessionHandle } from '../storage/lifecycle';
 import { DamagedDraftError, openDraftWriter, type DraftWriter } from '../storage/writer';
-import { deriveMeta } from '../core/draft';
+import { deriveMeta, renameChange } from '../core/draft';
 import { dayKey } from '../core/words';
 import { useStore } from './store';
 import { TYPEFACES, resolveTheme } from './settings';
@@ -17,6 +17,7 @@ type NoticeState =
   | { kind: 'stale'; text: string }
   | { kind: 'readonly' }
   | { kind: 'saving-error' }
+  | { kind: 'unsaved-leave' }
   | { kind: 'damaged'; text: string }
   | { kind: 'open-error' }
   | null;
@@ -37,12 +38,13 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
   const sessionRef = useRef<SessionHandle | null>(null);
   const [title, setTitle] = useState('');
   const [notice, setNotice] = useState<NoticeState>(null);
-  const [copied, setCopied] = useState(false);
+  const [copyLabel, setCopyLabel] = useState<string | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sidebar, setSidebar] = useState(false);
   const [palette, setPalette] = useState(false);
   const [mountKey, setMountKey] = useState(0);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const leaveRef = useRef<(go: () => void) => Promise<void>>(async (go) => go());
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
 
@@ -53,7 +55,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
     let commitTimer: ReturnType<typeof setTimeout> | null = null;
 
     void (async () => {
-      const loaded = await storage.loadDraft(draftId);
+      const loaded = await storage.loadDraft(draftId).catch(() => undefined);
+      if (disposed) return;
+      if (loaded === undefined) return setNotice({ kind: 'open-error' });
       if (disposed) return;
       if (!loaded) return onDeleted();
       setTitle(loaded.record.meta.title);
@@ -92,8 +96,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         () => openDraftWriter(storage, draftId, events),
         {
           onWritable: (w) => {
-            writerRef.current = w;
             loadText(view, w.currentText);
+            if (view.state.doc.length !== w.currentText.length) {
+              // the editor normalized the text (e.g. \r line breaks): recording would desync from the log
+              sessionRef.current?.dispose();
+              setNotice({ kind: 'open-error' });
+              return;
+            }
+            writerRef.current = w;
             setReadOnly(view, false);
             setNotice((n) => (n?.kind === 'readonly' ? null : n));
             view.focus();
@@ -109,7 +119,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
         },
         async (w, now) => (await storage.clearHistory(draftId, w.savedText, now, w.head, w.draft.epoch)).ok,
       );
-    })();
+    })().catch(() => {
+      if (!disposed) setNotice({ kind: 'open-error' });
+    });
 
     return () => {
       disposed = true;
@@ -176,7 +188,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
 
   const actions: PaletteActions = useMemo(
     () => ({
-      newDraft: () => onNew(),
+      newDraft: () => {
+        setPalette(false);
+        void leaveRef.current(() => onNew());
+      },
       openDrafts: () => {
         setPalette(false);
         setSidebar(true);
@@ -184,12 +199,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       rename: (t: string) => {
         const view = viewRef.current;
         if (!view || !writerRef.current) return;
-        const first = view.state.doc.line(1);
-        view.dispatch({ changes: { from: first.from, to: first.to, insert: `# ${t.trim() || 'Untitled'}` }, userEvent: 'input' });
+        view.dispatch({ changes: renameChange(view.state.doc.toString(), t), userEvent: 'input' });
       },
       exportMarkdown: () => exportText('md'),
       exportText: () => exportText('txt'),
-      exportAll: () => exportAll(storage, (at) => update({ lastExportedAt: at })),
+      exportAll: () => exportAll(storage, (at) => update({ lastExportedAt: at }), writerRef.current),
       importBackup: async () => {
         const r = await importBackup(storage);
         if (r?.added) void refreshDrafts();
@@ -201,12 +215,22 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       },
       deleteDraft: async () => {
         const s = sessionRef.current;
+        const view = viewRef.current;
+        // only the tab holding the draft may delete it (another tab would keep writing into it)
+        if (!s || !writerRef.current || !view) return 'Open this draft here first to delete it';
+        setReadOnly(view, true);
         sessionRef.current = null;
         writerRef.current = null;
-        await s?.dispose();
-        await storage.deleteDraft(draftId);
+        try {
+          await s.dispose();
+          await storage.deleteDraft(draftId);
+        } catch {
+          setMountKey((k) => k + 1); // reopen and keep writing; nothing was lost
+          return 'Couldn’t delete. Try again';
+        }
         setPalette(false);
         onDeleted();
+        return null;
       },
       resetToday: async () => {
         const now = Date.now();
@@ -217,6 +241,52 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
       toggleTheme,
     }),
     [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast, toggleTheme],
+  );
+
+  // ---------- leaving with unsaved text ----------
+  /** Try to save before switching drafts; if it can't, stay and offer the copy escape. */
+  const leave = useCallback(
+    async (go: () => void) => {
+      const w = writerRef.current;
+      if (w?.dirty) await w.flush(true);
+      if (w?.dirty || notice?.kind === 'stale') {
+        setChromeVisible(true);
+        setNotice((n) => (n?.kind === 'stale' ? n : { kind: 'unsaved-leave' }));
+        return;
+      }
+      go();
+    },
+    [notice],
+  );
+  leaveRef.current = leave;
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (writerRef.current?.dirty || notice?.kind === 'stale') e.preventDefault();
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [notice]);
+
+  const copyUnsaved = async () => {
+    const text = currentText();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyLabel('Copied');
+    } catch {
+      // clipboard blocked: select the text so ⌘C / Ctrl C (or the phone's Copy) works
+      const view = viewRef.current;
+      if (view) {
+        view.dispatch({ selection: { anchor: 0, head: view.state.doc.length } });
+        view.focus();
+      }
+      setCopyLabel(`Selected. Press ${isMac() ? '⌘C' : 'Ctrl C'} to copy`);
+    }
+    setTimeout(() => setCopyLabel(null), 4000);
+  };
+  const copyButton = (
+    <button type="button" className="text-btn" onClick={() => void copyUnsaved()}>
+      {copyLabel ?? 'Copy unsaved text'}
+    </button>
   );
 
   // ---------- shortcuts ----------
@@ -308,7 +378,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
 
       <footer className="footer ui">
         <div className={`count ${chromeClass}`}>
-          <span>{reached ? `${today} words today · goal reached` : `${today} of ${goal}`}</span>
+          <span>{reached ? `${today} words today · goal reached` : `${today} of ${goal} words`}</span>
         </div>
         {settings.showProgress && (
           <div className="progress" aria-hidden="true">
@@ -320,16 +390,15 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
             {notice.kind === 'stale' && (
               <>
                 <span>This tab stopped saving.</span>
-                <button
-                  type="button"
-                  className="text-btn"
-                  onClick={async () => {
-                    await navigator.clipboard?.writeText(notice.text).catch(() => {});
-                    setCopied(true);
-                    setTimeout(() => setCopied(false), 2000);
-                  }}
-                >
-                  {copied ? 'Copied' : 'Copy unsaved text'}
+                {copyButton}
+              </>
+            )}
+            {notice.kind === 'unsaved-leave' && (
+              <>
+                <span>Couldn’t save your newest words.</span>
+                {copyButton}
+                <button type="button" className="text-btn" onClick={() => setNotice(null)}>
+                  Keep writing
                 </button>
               </>
             )}
@@ -341,7 +410,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
                 </button>
               </>
             )}
-            {notice.kind === 'saving-error' && <span>Couldn’t save just now. Retrying…</span>}
+            {notice.kind === 'saving-error' && (
+              <>
+                <span>Couldn’t save just now. Retrying…</span>
+                {copyButton}
+              </>
+            )}
             {notice.kind === 'damaged' && (
               <>
                 <span>Part of this draft’s history is damaged.</span>
@@ -349,8 +423,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
                   type="button"
                   className="text-btn"
                   onClick={async () => {
-                    const loaded = await storage.loadDraft(draftId);
-                    if (loaded) await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch);
+                    try {
+                      const loaded = await storage.loadDraft(draftId);
+                      if (loaded) await storage.clearHistory(draftId, notice.text, Date.now(), loaded.record.head, loaded.record.epoch);
+                    } catch {
+                      return setNotice({ kind: 'open-error' });
+                    }
                     setNotice(null);
                     setMountKey((k) => k + 1);
                   }}
@@ -384,11 +462,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted }: Props) {
           onClose={closeOverlay}
           onOpen={(id) => {
             setSidebar(false);
-            if (id !== draftId) onOpen(id);
+            if (id !== draftId) void leave(() => onOpen(id));
           }}
           onNew={(t) => {
             setSidebar(false);
-            onNew(t);
+            void leave(() => onNew(t));
           }}
           onExportAll={actions.exportAll}
         />

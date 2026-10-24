@@ -126,6 +126,102 @@ test.describe('palette, sidebar, tabs', () => {
   });
 });
 
+test.describe('document commands and failure paths', () => {
+  test('rename inserts a heading above prose instead of overwriting the first line', async ({ page }) => {
+    const editor = await startWriting(page);
+    await write(page, editor, 'Dear Sam, it has been a while.');
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await runCommand(page, 'rename', /Rename draft/);
+    const field = page.getByRole('textbox', { name: 'Draft title' });
+    await field.fill('Letter to Sam');
+    await field.press('Enter');
+    await page.keyboard.press('Escape');
+    await expect(editor).toContainText('Dear Sam, it has been a while.');
+    await expect(page.locator('.header .title')).toHaveText('Letter to Sam', { timeout: 5000 });
+  });
+
+  test('Escape in an inline field cancels the edit and keeps the palette open', async ({ page, isMobile }) => {
+    test.skip(!!isMobile, 'keyboard path');
+    await startWriting(page);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await runCommand(page, 'daily word goal', /Daily word goal/);
+    await page.getByRole('textbox', { name: 'goal' }).press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: 'goal' })).toHaveCount(0);
+  });
+
+  test('→ on Typeface expands the choices; ↓ and Enter pick one', async ({ page, isMobile }) => {
+    test.skip(!!isMobile, 'keyboard path');
+    await startWriting(page);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await page.getByPlaceholder('Search commands and settings').fill('typeface');
+    await expect(page.locator('[cmdk-item][data-selected="true"]')).toHaveText(/Typeface/);
+    await page.keyboard.press('ArrowRight');
+    const group = page.locator('.choices');
+    await expect(group).toBeVisible();
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Enter');
+    await expect(group).toHaveCount(0);
+    await expect(page.getByRole('option', { name: /Typeface/ })).toContainText('Instrument Sans');
+  });
+
+  test('delete confirms in its row, then removes the draft and returns to landing', async ({ page }) => {
+    const editor = await startWriting(page);
+    await write(page, editor, 'short lived');
+    await settle(page);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await runCommand(page, 'delete draft', /Delete draft/);
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Delete' }).click();
+    await expect(page.getByRole('button', { name: 'Start writing' })).toBeVisible();
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Start writing' })).toBeVisible();
+  });
+
+  test('clear history keeps the text', async ({ page }) => {
+    const editor = await startWriting(page);
+    await write(page, editor, 'keep these words');
+    await settle(page);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await runCommand(page, 'clear history', /Clear history/);
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Clear' }).click();
+    await expect(page.getByRole('option', { name: /Clear history/ })).toContainText('History cleared');
+    await page.keyboard.press('Escape');
+    await editor.pressSequentially(' more');
+    await settle(page);
+    await page.reload();
+    await expect(page.getByRole('textbox', { name: 'Draft' })).toContainText('keep these words more');
+  });
+
+  test('when storage refuses writes, the tab says so and offers the unsaved text (R5)', async ({ page, context }) => {
+    await context.grantPermissions(['clipboard-read', 'clipboard-write']).catch(() => {});
+    const editor = await startWriting(page);
+    await editor.pressSequentially('first');
+    await settle(page);
+    // the draft disappears underneath this tab (deleted elsewhere): the next write is refused
+    await page.evaluate(async () => {
+      const db = await new Promise<IDBDatabase>((r) => { const q = indexedDB.open('kansowriter'); q.onsuccess = () => r(q.result); });
+      await new Promise((r) => { const t = db.transaction('drafts', 'readwrite'); t.objectStore('drafts').clear(); t.oncomplete = r; });
+      db.close();
+    });
+    await editor.pressSequentially(' second');
+    await expect(page.getByText('This tab stopped saving.')).toBeVisible({ timeout: 5000 });
+    await expect(editor).toHaveAttribute('contenteditable', 'false');
+    await page.getByRole('button', { name: 'Copy unsaved text' }).click();
+    await expect(page.locator('.notice')).toContainText(/Copied|Selected/);
+  });
+});
+
+test.describe('phone layout', () => {
+  test('the header never covers the first line of the draft', async ({ page, isMobile }) => {
+    test.skip(!isMobile, 'phone only');
+    const editor = await startWriting(page);
+    await write(page, editor, 'First line');
+    const header = await page.locator('.header').boundingBox();
+    const line = await page.locator('.cm-line').first().boundingBox();
+    expect(line!.y).toBeGreaterThanOrEqual(header!.y + header!.height);
+  });
+});
+
 test.describe('accessibility (17A)', () => {
   test('landing, editor, palette and sidebar pass axe', async ({ page }) => {
     await freshStart(page);

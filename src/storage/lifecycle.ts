@@ -6,7 +6,11 @@ const CHANNEL = 'kansowriter';
 export type ChannelMessage =
   | { type: 'handover-request'; draftId: string }
   | { type: 'released'; draftId: string }
-  | { type: 'committed'; draftId: string };
+  | { type: 'committed'; draftId: string }
+  | { type: 'settings' };
+
+/** sessions still releasing their lock, so re-opening the same draft waits instead of going read-only */
+const disposing = new Map<string, Promise<void>>();
 
 export function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
@@ -115,7 +119,12 @@ export function attachDraftSession(
   };
 
   if (locks) {
-    void request({ ifAvailable: true });
+    const prior = disposing.get(name);
+    if (prior)
+      void prior.then(() => {
+        if (!disposed) void request({ ifAvailable: true });
+      });
+    else void request({ ifAvailable: true });
   } else {
     // no Web Locks: head + epoch checks (R5) still protect the log
     openWriter().then(
@@ -185,6 +194,25 @@ export function attachDraftSession(
       bc?.postMessage({ type: 'handover-request', draftId } satisfies ChannelMessage);
     });
 
+  const disposeInner = async () => {
+    clearInterval(timer);
+    document.removeEventListener('visibilitychange', onHide);
+    window.removeEventListener('pagehide', onPageHide);
+    bc?.removeEventListener('message', onMessage);
+    const w = writer;
+    writer = null;
+    if (handover) await handover; // let a running handover finish before releasing
+    try {
+      if (w) {
+        await w.flush(true);
+        if (w.dirty) w.abandon();
+      }
+    } finally {
+      release?.();
+      bc?.close();
+    }
+  };
+
   return {
     get writer() {
       return writer;
@@ -198,7 +226,9 @@ export function attachDraftSession(
         await new Promise<void>((resolve) => {
           const gen = ++generation;
           void locks
-            .request(name, released ? {} : { steal: true }, async (lock) => {
+            // after 'released' another waiting tab may win: never queue behind it (it'd silently
+            // become the writer much later); losing the race just stays read-only
+            .request(name, released ? { ifAvailable: true } : { steal: true }, async (lock) => {
               resolve();
               await hold(lock, gen);
             })
@@ -212,24 +242,14 @@ export function attachDraftSession(
       });
       return inflight;
     },
-    async dispose() {
+    dispose() {
+      if (disposed) return disposing.get(name) ?? Promise.resolve();
       disposed = true;
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', onHide);
-      window.removeEventListener('pagehide', onPageHide);
-      bc?.removeEventListener('message', onMessage);
-      const w = writer;
-      writer = null;
-      if (handover) await handover; // let a running handover finish before releasing
-      try {
-        if (w) {
-          await w.flush(true);
-          if (w.dirty) w.abandon();
-        }
-      } finally {
-        release?.();
-        bc?.close();
-      }
+      const done = disposeInner().finally(() => {
+        if (disposing.get(name) === done) disposing.delete(name);
+      });
+      disposing.set(name, done);
+      return done;
     },
     async clearHistory(now = Date.now()) {
       const w = writer;
@@ -238,7 +258,18 @@ export function attachDraftSession(
       // lost the lock (handover/steal) or disposed while flushing: never rewrite history without it
       if (writer !== w || disposed || w.dirty || w.isStale) return false;
       if (!(await clear(w, now))) return false;
-      const next = await openWriter();
+      let next: DraftWriter;
+      try {
+        next = await openWriter();
+      } catch (error) {
+        // history IS cleared, but the old writer holds a dead epoch: retire it, hand back edits
+        if (writer === w && !disposed) {
+          writer = null;
+          w.abandon();
+          readOnly('error', error);
+        }
+        return true;
+      }
       if (writer !== w || disposed) return true; // lock changed hands meanwhile; the new holder loads fresh
       // carry over anything typed while clearing, onto the rebuilt writer
       for (const c of w.takeUnsaved()) next.push(c);

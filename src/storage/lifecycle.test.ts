@@ -325,4 +325,53 @@ describe('attachDraftSession (single writer, R23)', () => {
     await until(() => a.writer!.savedText === 'Hel');
     expect((await db.loadDraft('d1'))!.text).toBe('Hel');
   });
+
+  it('re-opening the same draft while the previous session is still disposing becomes writable, not read-only', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['words'], at: Date.now(), kind: 'type' });
+    const disposing = a.dispose();
+    const b = open('b', log);
+    await disposing;
+    await until(() => b.writer !== null);
+    expect(log).not.toContain('b:readonly:other-tab');
+    expect(b.writer!.currentText).toBe('words');
+  });
+
+  it('two read-only tabs taking over at once: the loser stays read-only instead of queueing (red team)', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    const b = open('b', log);
+    const c = open('c', log);
+    await until(() => log.includes('b:readonly:other-tab') && log.includes('c:readonly:other-tab'));
+    await Promise.all([b.takeOver(), c.takeOver()]);
+    await until(() => (b.writer !== null) !== (c.writer !== null));
+    // the loser's takeOver settled (no hung inflight) and it is read-only, not waiting for the lock
+    expect(log.filter((l) => l.endsWith(':readonly:other-tab')).length).toBeGreaterThanOrEqual(3);
+    await new Promise((r) => setTimeout(r, 50));
+    expect([b.writer, c.writer].filter(Boolean)).toHaveLength(1);
+  });
+
+  it('clearHistory whose rebuild fails retires the old writer and reports read-only error (red team)', async () => {
+    const log: string[] = [];
+    let fail = false;
+    const openW = async () => {
+      if (fail) throw new Error('idb hiccup');
+      const loaded = (await db.loadDraft('d1'))!;
+      return new DraftWriter(db, loaded.record, loaded.text, { onStale: (t) => log.push(`stale:${t}`), onCommit: () => {} });
+    };
+    const s = attachDraftSession('d1', openW, { onWritable: () => log.push('writable'), onReadOnly: (r) => log.push(`readonly:${r}`) }, async (w, now) =>
+      (await db.clearHistory('d1', w.savedText, now, w.head, w.draft.epoch)).ok,
+    );
+    sessions.push(s);
+    await until(() => s.writer !== null);
+    s.writer!.push({ runs: ['text'], at: Date.now(), kind: 'other' });
+    fail = true;
+    expect(await s.clearHistory()).toBe(true);
+    expect(s.writer).toBeNull();
+    expect(log).toContain('readonly:error');
+    expect((await db.loadDraft('d1'))!.text).toBe('text');
+  });
 });

@@ -42,7 +42,9 @@ function build(view: EditorView): DecorationSet {
         const h = /^ATXHeading(\d)$/.exec(name);
         if (h) items.push({ from: line.from, to: line.from, deco: lineClass(`cm-h${h[1]}`), line: true });
         else if (name === 'Blockquote') {
-          for (let n = line.number; n <= state.doc.lineAt(node.to).number; n++) {
+          // only the lines inside this visible range (a pasted 5,000-line quote stays cheap)
+          const last = state.doc.lineAt(Math.min(node.to, to)).number;
+          for (let n = state.doc.lineAt(Math.max(node.from, from)).number; n <= last; n++) {
             const l = state.doc.line(n);
             items.push({ from: l.from, to: l.from, deco: lineClass('cm-quote'), line: true });
           }

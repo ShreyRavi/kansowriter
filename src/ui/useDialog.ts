@@ -12,6 +12,8 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
     (initial?.current ?? ref.current?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        // inline editors (palette fields, choices, confirmations) cancel themselves first
+        if ((e.target as Element | null)?.closest?.('[data-local-escape]')) return;
         e.preventDefault();
         e.stopPropagation();
         onClose();

@@ -124,10 +124,81 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     const bytes = await encodeBackup(await db.exportAll());
     const fresh = new IndexedDbAdapter(`test-${n++}`);
     const res = await fresh.importAll(await decodeBackup(bytes));
-    expect(res).toEqual({ added: 1, skipped: 0 });
+    expect(res).toEqual({ added: 1, copies: 0, skipped: 0, damaged: 0 });
     expect((await fresh.loadDraft('d1'))!.text).toBe('kept words');
     expect(await fresh.loadOps('d1')).toEqual(await db.loadOps('d1'));
-    expect(await fresh.importAll(await decodeBackup(bytes))).toEqual({ added: 0, skipped: 1 });
+    expect(await fresh.importAll(await decodeBackup(bytes))).toEqual({ added: 0, copies: 0, skipped: 1, damaged: 0 });
+  });
+
+  it('a draft that diverged on another device imports as a copy, never "already here" (red team)', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'base', T0);
+    await w.flush(true, T0 + 1000);
+    const deviceA = await db.exportAll();
+    // device B restores, then keeps writing
+    const b = new IndexedDbAdapter(`test-${n++}`);
+    await b.importAll(deviceA);
+    const lb = (await b.loadDraft('d1'))!;
+    const wb = new DraftWriter(b, lb.record, lb.text, { onStale: () => {}, onCommit: () => {} }, () => 0);
+    typeWord(wb, ' more', T0 + 5000);
+    await wb.flush(true, T0 + 9000);
+    const res = await db.importAll(await b.exportAll());
+    expect(res).toEqual({ added: 1, copies: 1, skipped: 0, damaged: 0 });
+    const texts = await Promise.all((await db.listDrafts()).map(async (d) => (await db.loadDraft(d.id))!.text));
+    expect(texts.sort()).toEqual(['base', 'base more']);
+  });
+
+  it('a draft whose ops do not replay is left out instead of failing the whole import', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'fine', T0);
+    await w.flush(true, T0 + 1000);
+    const data = await db.exportAll();
+    data.drafts.push({ record: { ...data.drafts[0]!.record, id: 'bad' }, ops: [[0, 0, 5, 'x']], snapshots: [] });
+    const target = new IndexedDbAdapter(`test-${n++}`);
+    expect(await target.importAll(data)).toEqual({ added: 1, copies: 0, skipped: 0, damaged: 1 });
+  });
+
+  it('backups with carriage returns are rejected (the editor would desync from the log)', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'ok', T0);
+    await w.flush(true, T0 + 1000);
+    const data = await db.exportAll();
+    data.drafts[0]!.ops.push([0, 0, 2, '\r\n']);
+    await expect(decodeBackup(await encodeBackup(data))).rejects.toThrow();
+  });
+
+  it('keeps only the base and newest snapshot as the draft grows (storage stays linear)', async () => {
+    const { w } = await makeWriter();
+    for (let i = 0; i < 1001; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'z'] : ['z'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 20_000);
+    expect((await db.loadSnapshots('d1')).map((s) => s.opIndex)).toEqual([1000]);
+    expect((await db.loadDraft('d1'))!.text).toBe('z'.repeat(1001));
+  });
+
+  it('failed saves retry in bounded batches and recover once storage works again', async () => {
+    const { w, events } = await makeWriter();
+    const real = db.append.bind(db);
+    const sizes: number[] = [];
+    let fail = true;
+    db.append = async (b) => {
+      sizes.push(b.ops.length);
+      if (fail) throw new Error('QuotaExceededError');
+      return real(b);
+    };
+    for (let i = 0; i < 450; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'q'] : ['q'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 1000);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(200);
+    fail = false;
+    await w.flush(true, T0 + 100_000);
+    expect(w.dirty).toBe(false);
+    expect(events.stale).toBeNull();
+    expect((await db.loadDraft('d1'))!.text).toBe('q'.repeat(450));
   });
 
   it('an old writer cannot write after clear-history even when heads coincide (epoch, red team)', async () => {
@@ -222,5 +293,13 @@ describe('DraftWriter + IndexedDbAdapter', () => {
 
   it('rejects files that are not backups', async () => {
     await expect(decodeBackup(new TextEncoder().encode('nope'))).rejects.toThrow('isn’t a Kansowriter backup');
+  });
+});
+
+describe('settings', () => {
+  it('patchSetting merges, so a stale tab cannot write back fields it did not change (red team)', async () => {
+    await db.setSetting('settings', { theme: 'night', lastExportedAt: 1 });
+    await Promise.all([db.patchSetting('settings', { lastExportedAt: 99 }), db.patchSetting('settings', { focus: 'off' })]);
+    expect(await db.getSetting('settings')).toEqual({ theme: 'night', lastExportedAt: 99, focus: 'off' });
   });
 });

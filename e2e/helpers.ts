@@ -48,5 +48,9 @@ export async function write(page: Page, editor: Locator, text: string) {
 export async function runCommand(page: Page, query: string, option: string | RegExp) {
   await page.getByPlaceholder('Search commands and settings').fill(query);
   if (isMobile(page)) await page.getByRole('option', { name: option }).first().click();
-  else await page.keyboard.press('Enter');
+  else {
+    // cmdk re-selects after filtering on the next frame: wait for it, as a person would
+    await expect(page.locator('[cmdk-item][data-selected="true"]')).toHaveText(option);
+    await page.keyboard.press('Enter');
+  }
 }

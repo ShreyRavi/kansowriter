@@ -96,14 +96,15 @@ function isDraft(d: unknown): d is BackupDraft {
     prev = s.opIndex;
   }
   for (const s of d.snapshots) {
-    if (!isObj(s) || !isInt(s.opIndex) || s.opIndex > d.ops.length || typeof s.text !== 'string') return false;
+    if (!isObj(s) || !isInt(s.opIndex) || s.opIndex > d.ops.length || typeof s.text !== 'string' || s.text.includes('\r')) return false;
   }
   // Ops must replay from the base snapshot. Track only the length (linear, no string building);
   // the importer rebuilds later snapshots itself instead of trusting their text.
   const base = d.snapshots.find((s) => (s as { opIndex: number }).opIndex === 0) as { text: string } | undefined;
   let len = base?.text.length ?? 0;
   for (const op of d.ops as Op[]) {
-    if (!isValidOp(op, len)) return false;
+    // the editor normalizes line breaks to \n, so text with \r would desync it from the log
+    if (!isValidOp(op, len) || op.some((r) => typeof r === 'string' && r.includes('\r'))) return false;
     len = targetLength(runsOf(op));
   }
   return true;

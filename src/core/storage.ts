@@ -57,7 +57,17 @@ export interface StorageAdapter {
   getDay(key: string): Promise<Day | undefined>;
   resetDay(key: string): Promise<Day>;
   exportAll(): Promise<BackupData>;
-  importAll(data: BackupData): Promise<{ added: number; skipped: number }>;
+  importAll(data: BackupData): Promise<ImportResult>;
   getSetting<T>(key: string): Promise<T | undefined>;
   setSetting<T>(key: string, value: T): Promise<void>;
+  /** merge `patch` into the stored object in one transaction (tabs never write back stale fields) */
+  patchSetting(key: string, patch: Record<string, unknown>): Promise<void>;
+}
+
+/** added includes copies; copies = drafts already here whose text differed (imported with a new id) */
+export interface ImportResult {
+  added: number;
+  copies: number;
+  skipped: number;
+  damaged: number;
 }

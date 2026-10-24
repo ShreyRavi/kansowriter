@@ -1,7 +1,7 @@
 import { Compartment, EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, placeholder as placeholderExt } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { markdown } from '@codemirror/lang-markdown';
+import { commonmarkLanguage } from '@codemirror/lang-markdown';
 import { hybridMarkdown } from './hybrid';
 import { focusMode, setFocusMode, type FocusMode } from './focus';
 import { notRecorded, recorder } from './recorder';
@@ -27,6 +27,7 @@ function typewriterExt(on: boolean): Extension {
     if (!u.selectionSet && !u.docChanged) return;
     const view = u.view;
     view.requestMeasure({
+      key: 'typewriter', // one measure per frame, however many updates arrive
       read: () => view.coordsAtPos(view.state.selection.main.head),
       write: (coords) => {
         if (!coords) return;
@@ -47,8 +48,9 @@ export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView 
     doc: o.doc,
     extensions: [
       history(),
-      keymap.of([...defaultKeymap.filter((k) => k.key !== 'Tab' && k.key !== 'Shift-Tab'), ...historyKeymap]),
-      markdown(),
+      keymap.of([...defaultKeymap, ...historyKeymap]),
+      // plain CommonMark: markdown() would bundle the HTML/CSS/JS parsers for embedded code (R6: text only)
+      commonmarkLanguage,
       EditorView.lineWrapping,
       hybridMarkdown,
       focusMode(o.focus),

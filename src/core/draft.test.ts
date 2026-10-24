@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 import { apply, makeOp, type Op } from './kop';
-import { deriveMeta, needsNewSession, opTimes, replay, SESSION_GAP_MS, shouldSnapshot, type Session } from './draft';
+import { deriveMeta, needsNewSession, opTimes, renameChange, replay, SESSION_GAP_MS, shouldSnapshot, type Session } from './draft';
 
 const arbEdits = fc.array(
   fc.record({ pos: fc.nat(), del: fc.nat({ max: 5 }), ins: fc.string({ maxLength: 6 }) }),
@@ -84,5 +84,25 @@ describe('meta', () => {
     expect(shouldSnapshot(0)).toBe(false);
     expect(shouldSnapshot(500)).toBe(true);
     expect(shouldSnapshot(501)).toBe(false);
+  });
+});
+
+describe('renameChange (rename never overwrites the first line of prose)', () => {
+  const run = (doc: string, t: string) => {
+    const c = renameChange(doc, t);
+    return doc.slice(0, c.from) + c.insert + doc.slice(c.to);
+  };
+  it('replaces an existing heading, keeping its level', () => {
+    expect(run('# Old\n\nBody', 'New')).toBe('# New\n\nBody');
+    expect(run('\n## Old\nBody', 'New')).toBe('\n## New\nBody');
+    expect(run('#\nBody', 'New')).toBe('# New\nBody');
+  });
+  it('inserts a heading above prose instead of replacing it', () => {
+    expect(run('Dear Sam, it has been a while.', 'Letter')).toBe('# Letter\n\nDear Sam, it has been a while.');
+    expect(run('#hashtag line', 'T')).toBe('# T\n\n#hashtag line');
+  });
+  it('an empty draft just gets the heading; a blank title becomes Untitled', () => {
+    expect(run('', 'Hi')).toBe('# Hi');
+    expect(run('# X', '  ')).toBe('# Untitled');
   });
 });

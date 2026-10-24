@@ -90,3 +90,18 @@ describe('loading text', () => {
     expect(view).toBeInstanceOf(EditorView);
   });
 });
+
+describe('loadText', () => {
+  it('is not recorded and cannot be undone back to the previous document', async () => {
+    const { undo } = await import('@codemirror/commands');
+    const changes: Change[] = [];
+    const view = createEditor(document.createElement('div'), {
+      doc: 'old', onChange: (c) => changes.push(c), onActivity: () => {}, focus: 'off', typewriter: false, readOnly: false,
+    });
+    loadText(view, 'loaded from storage');
+    expect(changes).toHaveLength(0);
+    undo(view);
+    expect(view.state.doc.toString()).toBe('loaded from storage');
+    view.destroy();
+  });
+});

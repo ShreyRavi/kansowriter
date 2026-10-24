@@ -3,7 +3,16 @@ import type { Op } from '../core/kop';
 import { apply } from '../core/kop';
 import { newEpoch, SNAPSHOT_EVERY, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
-import type { AppendBatch, AppendResult, BackupData, LoadedDraft, StorageAdapter } from '../core/storage';
+import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, StorageAdapter } from '../core/storage';
+import { BackupError } from '../core/backup';
+
+/** total characters copied while replaying an import (~a few seconds of work) */
+const REPLAY_BUDGET = 4e9;
+class ReplayBudgetError extends BackupError {
+  constructor() {
+    super('This backup is too large to import here');
+  }
+}
 
 /**
  * IndexedDB layout (R15, R20):
@@ -112,7 +121,13 @@ export class IndexedDbAdapter implements StorageAdapter {
       const head = rec.head + b.ops.length;
       const sessions = b.newSession ? [...rec.sessions, b.newSession] : rec.sessions;
       await this.db.drafts.put({ ...rec, head, meta: b.meta, updatedAt: b.updatedAt, sessions });
-      if (b.snapshots.length) await this.db.snapshots.bulkPut(b.snapshots.map((s) => ({ draftId: b.draftId, ...s })));
+      if (b.snapshots.length) {
+        // keep only the base (opIndex 0) and the newest snapshot: loads read just the latest one,
+        // and full-text copies every 500 ops would otherwise grow quadratically with the draft
+        const newest = Math.max(...b.snapshots.map((s) => s.opIndex));
+        await this.db.snapshots.where('[draftId+opIndex]').between([b.draftId, 1], [b.draftId, newest], true, false).delete();
+        await this.db.snapshots.put({ draftId: b.draftId, ...b.snapshots.find((s) => s.opIndex === newest)! });
+      }
       const touched = new Map<string, Day>();
       for (const { key, delta } of b.dayDeltas) {
         const day = touched.get(key) ?? (await this.db.days.get(key)) ?? emptyDay(key);
@@ -179,32 +194,58 @@ export class IndexedDbAdapter implements StorageAdapter {
   }
 
   /**
-   * Adds drafts whose id is absent. Only the opIndex-0 base snapshot is trusted from the file;
-   * later snapshots are rebuilt by replaying the (already validated) ops.
+   * Adds every draft from the file. A draft whose id is already here is skipped only when its
+   * text matches; a draft that diverged (edited on another device) comes in as a copy with a new
+   * id, so newer work is never dropped. Only the opIndex-0 base snapshot is trusted from the
+   * file; the newest snapshot is rebuilt by replaying the (already validated) ops. A draft whose
+   * ops don't replay is left out and counted, instead of failing the whole import.
    */
-  async importAll(data: BackupData): Promise<{ added: number; skipped: number }> {
+  async importAll(data: BackupData): Promise<ImportResult> {
+    // replay cost is ops × text length; a crafted (or absurd) file must not hang the tab
+    let budget = REPLAY_BUDGET;
+    const prepared = data.drafts.map((d) => {
+      const base = d.snapshots.find((s) => s.opIndex === 0);
+      let text = base?.text ?? '';
+      let snap: Snapshot | null = null;
+      try {
+        d.ops.forEach((op, i) => {
+          budget -= text.length + 1;
+          if (budget < 0) throw new ReplayBudgetError();
+          text = apply(text, op);
+          if ((i + 1) % SNAPSHOT_EVERY === 0) snap = { opIndex: i + 1, text };
+        });
+      } catch (e) {
+        if (e instanceof ReplayBudgetError) throw e;
+        return null;
+      }
+      return { d, base, text, snap: snap as Snapshot | null };
+    });
     return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots, this.db.days], async () => {
-      let added = 0;
-      let skipped = 0;
-      for (const d of data.drafts) {
-        if (await this.db.drafts.get(d.record.id)) {
-          skipped++;
+      const r: ImportResult = { added: 0, copies: 0, skipped: 0, damaged: 0 };
+      for (const p of prepared) {
+        if (!p) {
+          r.damaged++;
           continue;
         }
-        const base = d.snapshots.find((s) => s.opIndex === 0);
-        const snaps: SnapRow[] = base ? [{ draftId: d.record.id, opIndex: 0, text: base.text }] : [];
-        let text = base?.text ?? '';
-        d.ops.forEach((op, i) => {
-          text = apply(text, op);
-          if ((i + 1) % SNAPSHOT_EVERY === 0) snaps.push({ draftId: d.record.id, opIndex: i + 1, text });
-        });
-        await this.db.drafts.add({ ...d.record, head: d.ops.length, epoch: newEpoch() });
-        await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: d.record.id, seq, op })));
+        const { d, base, text, snap } = p;
+        let id = d.record.id;
+        if (await this.db.drafts.get(id)) {
+          if ((await this.loadDraft(id))?.text === text) {
+            r.skipped++;
+            continue;
+          }
+          id = crypto.randomUUID();
+          r.copies++;
+        }
+        r.added++;
+        const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
+        if (snap) snaps.push({ draftId: id, ...(snap as Snapshot) });
+        await this.db.drafts.add({ ...d.record, id, head: d.ops.length, epoch: newEpoch() });
+        await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: id, seq, op })));
         if (snaps.length) await this.db.snapshots.bulkAdd(snaps);
-        added++;
       }
       for (const day of data.days) if (!(await this.db.days.get(day.key))) await this.db.days.add(day);
-      return { added, skipped };
+      return r;
     });
   }
 
@@ -214,5 +255,12 @@ export class IndexedDbAdapter implements StorageAdapter {
 
   async setSetting<T>(key: string, value: T): Promise<void> {
     await this.db.kv.put({ key, value });
+  }
+
+  async patchSetting(key: string, patch: Record<string, unknown>): Promise<void> {
+    await this.db.transaction('rw', this.db.kv, async () => {
+      const cur = (await this.db.kv.get(key))?.value;
+      await this.db.kv.put({ key, value: { ...(typeof cur === 'object' && cur ? cur : {}), ...patch } });
+    });
   }
 }

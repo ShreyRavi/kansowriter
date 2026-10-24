@@ -7,6 +7,8 @@ export const MERGE_WINDOW_MS = 1000;
 export const BATCH_MS = 500;
 const RETRY_MIN_MS = 1000;
 const RETRY_MAX_MS = 30_000;
+/** ops per append: keeps a retry small enough to fit once a little space frees up */
+export const MAX_BATCH = 200;
 
 /** What the editor recorder reports for each document change. */
 export interface Change {
@@ -29,8 +31,6 @@ interface Closed {
   start: number;
   delta: number;
   key: string;
-  /** document text after this op */
-  after: string;
   session?: Session;
   snapshot?: Snapshot;
 }
@@ -199,7 +199,8 @@ export class DraftWriter {
     this.closedText = after;
     this.lastEnd = p.end;
     const tz = session?.tzOffset ?? this.tzOffset();
-    const closed: Closed = { op, start: p.start, delta: wordDelta(before, after, op), key: dayKey(p.start, tz), after, session };
+    // no per-op copy of the document: a long run of failed saves must not hold N copies (memory)
+    const closed: Closed = { op, start: p.start, delta: wordDelta(before, after, op), key: dayKey(p.start, tz), session };
     if (shouldSnapshot(index + 1)) closed.snapshot = { opIndex: index + 1, text: after };
     this.queue.push(closed);
   }
@@ -220,11 +221,13 @@ export class DraftWriter {
     while (this.queue.length && !this.stale) {
       // one append per session boundary, so each batch carries at most one new session
       let n = 1;
-      while (n < this.queue.length && !this.queue[n]!.session) n++;
+      while (n < this.queue.length && n < MAX_BATCH && !this.queue[n]!.session) n++;
       const batch = this.queue.slice(0, n);
       const last = batch[n - 1]!;
+      let after = this.committedText;
+      for (const c of batch) after = apply(after, c.op);
       const words = Math.max(0, this.record.meta.words + batch.reduce((s, c) => s + c.delta, 0));
-      const meta = deriveMeta(last.after, words);
+      const meta = deriveMeta(after, words);
       let result;
       try {
         result = await this.storage.append({
@@ -255,7 +258,7 @@ export class DraftWriter {
         this.emit(() => this.events.onError?.(null));
       }
       this.queue.splice(0, n);
-      this.committedText = last.after;
+      this.committedText = after;
       const sessions = batch[0]!.session ? [...this.record.sessions, batch[0]!.session] : this.record.sessions;
       this.record = { ...this.record, head: result.head, meta, sessions, updatedAt: last.start };
       const committed = this.record;

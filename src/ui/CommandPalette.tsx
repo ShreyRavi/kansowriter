@@ -1,4 +1,4 @@
-import { useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { Command } from 'cmdk';
 import { useStore } from './store';
 import { clamp, LIMITS, resolveTheme, TYPEFACES, type Settings, type Typeface } from './settings';
@@ -16,7 +16,8 @@ export interface PaletteActions {
   exportAll(): Promise<string>;
   importBackup(): Promise<string | null>;
   clearHistory(): Promise<string>;
-  deleteDraft(): Promise<void>;
+  /** resolves to an error label when the draft could not be deleted */
+  deleteDraft(): Promise<string | null>;
   resetToday(): Promise<void>;
   toggleTheme(): void;
 }
@@ -39,13 +40,22 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
   const [expanded, setExpanded] = useState<'typeface' | 'hide' | null>(null);
   const [confirm, setConfirm] = useState<'delete' | 'clear' | null>(null);
   const [labels, setLabels] = useState<Record<string, string>>({});
+  const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   useDialog(ref, onClose, inputRef);
+  useEffect(() => () => timers.current.forEach(clearTimeout), []);
 
-  const flash = (key: string, text: string | null) => {
-    if (!text) return;
+  /** show a result in the row (9A); `hold` keeps it until the next flash (e.g. "Saving…") */
+  const flash = (key: string, text: string | null, hold = false) => {
+    clearTimeout(timers.current.get(key));
+    if (!text) return setLabels((l) => ({ ...l, [key]: '' }));
     setLabels((l) => ({ ...l, [key]: text }));
-    setTimeout(() => setLabels((l) => ({ ...l, [key]: '' })), 2000);
+    if (!hold) timers.current.set(key, setTimeout(() => setLabels((l) => ({ ...l, [key]: '' })), 2500));
   };
+  const run = (key: string, pending: string, f: () => Promise<string | null>) => {
+    flash(key, pending, true);
+    void f().then((t) => flash(key, t));
+  };
+  const backToSearch = () => inputRef.current?.focus();
 
   const startEdit = (key: NumKey | 'rename') => {
     setEditing(key);
@@ -58,9 +68,20 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
       if (Number.isFinite(n)) update({ [editing]: clamp(Math.round(n / LIMITS[editing].step) * LIMITS[editing].step, LIMITS[editing]) } as Partial<Settings>);
     }
     setEditing(null);
-    inputRef.current?.focus();
+    backToSearch();
   };
-  const step = (key: NumKey, dir: 1 | -1) => update({ [key]: clamp(settings[key] + dir * LIMITS[key].step, LIMITS[key]) } as Partial<Settings>);
+  const cancelEdit = () => {
+    setEditing(null);
+    backToSearch();
+  };
+  const step = (key: NumKey, dir: 1 | -1) => {
+    const base = Number.isFinite(Number(draftValue)) ? Number(draftValue) : settings[key];
+    const n = clamp(base + dir * LIMITS[key].step, LIMITS[key]);
+    setDraftValue(String(n));
+    update({ [key]: n } as Partial<Settings>);
+  };
+  // steppers must not take focus from the field (its blur commits and closes the editor)
+  const keepFocus = (e: { preventDefault(): void }) => e.preventDefault();
 
   const hideLabel = settings.hideChrome === 'never' ? 'Never' : `After ${settings.hideChrome} s`;
   const hideCycle: Settings['hideChrome'][] = ['never', 3, 10];
@@ -70,8 +91,8 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
 
   const numField = (key: NumKey, unit = '') =>
     editing === key ? (
-      <span className="val" onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="icon-btn stepper" aria-label="Decrease" onClick={() => step(key, -1)}>−</button>
+      <span className="val" data-local-escape onClick={(e) => e.stopPropagation()}>
+        <button type="button" className="icon-btn stepper" aria-label="Decrease" onMouseDown={keepFocus} onClick={() => step(key, -1)}>−</button>
         <input
           autoFocus
           inputMode="numeric"
@@ -81,10 +102,8 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
           onKeyDown={(e: ReactKeyboardEvent<HTMLInputElement>) => {
             e.stopPropagation();
             if (e.key === 'Enter') commitEdit();
-            else if (e.key === 'Escape') {
-              setEditing(null);
-              inputRef.current?.focus();
-            } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+            else if (e.key === 'Escape') cancelEdit();
+            else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
               e.preventDefault();
               const n = clamp(Number(draftValue) + (e.key === 'ArrowRight' ? 1 : -1) * LIMITS[key].step, LIMITS[key]);
               setDraftValue(String(n));
@@ -93,7 +112,7 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
           }}
           onBlur={commitEdit}
         />
-        <button type="button" className="icon-btn stepper" aria-label="Increase" onClick={() => step(key, 1)}>+</button>
+        <button type="button" className="icon-btn stepper" aria-label="Increase" onMouseDown={keepFocus} onClick={() => step(key, 1)}>+</button>
       </span>
     ) : (
       <Val value={`${settings[key]}${unit}`} />
@@ -102,7 +121,22 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
   return (
     <div className="palette-wrap" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div ref={ref} className="palette" role="dialog" aria-modal="true" aria-label="Command palette">
-        <Command label="Commands and settings" loop shouldFilter={!editing && !confirm && !expanded}>
+        <Command
+          label="Commands and settings"
+          loop
+          shouldFilter={!editing && !confirm && !expanded}
+          onKeyDown={(e: ReactKeyboardEvent) => {
+            // → on a choice row expands its options (19A); only when the search caret is at the end
+            if (e.key !== 'ArrowRight' || editing || expanded || confirm) return;
+            const input = inputRef.current;
+            if (input && document.activeElement === input && input.selectionStart !== input.value.length) return;
+            const v = (ref.current?.querySelector('[cmdk-item][data-selected="true"]')?.getAttribute('data-value') ?? '').toLowerCase();
+            if (v === 'typeface' || v === 'hide interface when typing') {
+              e.preventDefault();
+              setExpanded(v === 'typeface' ? 'typeface' : 'hide');
+            }
+          }}
+        >
           <div className="bar">
             <SearchIcon />
             <Command.Input ref={inputRef} value={query} onValueChange={setQuery} placeholder="Search commands and settings" />
@@ -124,7 +158,6 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
               <Command.Item
                 value="Typeface"
                 onSelect={() => update({ typeface: faces[(faces.indexOf(settings.typeface) + 1) % faces.length]! })}
-                onKeyDown={(e: ReactKeyboardEvent) => e.key === 'ArrowRight' && setExpanded('typeface')}
               >
                 <span>Typeface</span>
                 <Val value={TYPEFACES[settings.typeface].label} />
@@ -136,8 +169,12 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                   onPick={(f) => {
                     update({ typeface: f as Typeface });
                     setExpanded(null);
+                    backToSearch();
                   }}
-                  onClose={() => setExpanded(null)}
+                  onClose={() => {
+                    setExpanded(null);
+                    backToSearch();
+                  }}
                 />
               )}
             </Command.Group>
@@ -149,7 +186,6 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
               <Command.Item
                 value="Hide interface when typing"
                 onSelect={() => update({ hideChrome: hideCycle[(hideCycle.indexOf(settings.hideChrome) + 1) % hideCycle.length]! })}
-                onKeyDown={(e: ReactKeyboardEvent) => e.key === 'ArrowRight' && setExpanded('hide')}
               >
                 <span>Hide interface when typing</span>
                 <Val value={hideLabel} />
@@ -161,8 +197,12 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                   onPick={(id) => {
                     update({ hideChrome: id === 'never' ? 'never' : (Number(id) as 3 | 10) });
                     setExpanded(null);
+                    backToSearch();
                   }}
-                  onClose={() => setExpanded(null)}
+                  onClose={() => {
+                    setExpanded(null);
+                    backToSearch();
+                  }}
                 />
               )}
             </Command.Group>
@@ -183,7 +223,7 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
               <Command.Item value="Rename draft" onSelect={() => startEdit('rename')}>
                 <span>Rename draft</span>
                 {editing === 'rename' ? (
-                  <span className="val" onClick={(e) => e.stopPropagation()}>
+                  <span className="val" data-local-escape onClick={(e) => e.stopPropagation()}>
                     <input
                       autoFocus
                       className="wide"
@@ -193,7 +233,7 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                       onKeyDown={(e) => {
                         e.stopPropagation();
                         if (e.key === 'Enter') commitEdit();
-                        if (e.key === 'Escape') setEditing(null);
+                        if (e.key === 'Escape') cancelEdit();
                       }}
                     />
                   </span>
@@ -203,16 +243,20 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
               </Command.Item>
               <Item label="Export as Markdown" value={labels.md || '.md'} kbd={`${mod()}E`} onSelect={() => flash('md', actions.exportMarkdown())} />
               <Item label="Export as plain text" value={labels.txt || '.txt'} kbd={`${mod()}⇧E`} onSelect={() => flash('txt', actions.exportText())} />
-              <Item label="Export all drafts" value={labels.all || ''} onSelect={() => void actions.exportAll().then((t) => flash('all', t))} />
-              <Item label="Import backup" value={labels.imp || ''} onSelect={() => void actions.importBackup().then((t) => flash('imp', t))} />
+              <Item label="Export all drafts" value={labels.all || ''} onSelect={() => run('all', 'Saving…', actions.exportAll)} />
+              <Item label="Import backup" value={labels.imp || ''} onSelect={() => run('imp', 'Reading…', actions.importBackup)} />
               {confirm === 'clear' ? (
                 <Confirm
                   text={`Clear history of “${title || 'Untitled'}”? The text stays.`}
                   action="Clear"
-                  onCancel={() => setConfirm(null)}
-                  onConfirm={async () => {
+                  onCancel={() => {
                     setConfirm(null);
-                    flash('clear', await actions.clearHistory());
+                    backToSearch();
+                  }}
+                  onConfirm={() => {
+                    setConfirm(null);
+                    backToSearch();
+                    run('clear', 'Clearing…', actions.clearHistory);
                   }}
                 />
               ) : (
@@ -223,15 +267,22 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
                   text={`Delete “${title || 'Untitled'}”? This can’t be undone.`}
                   action="Delete"
                   extra={
-                    <button type="button" className="text-btn" onClick={() => void actions.exportAll().then((t) => flash('all', t))}>
-                      Export first
+                    <button type="button" className="text-btn" onClick={() => run('all', 'Saving…', actions.exportAll)}>
+                      {labels.all || 'Export first'}
                     </button>
                   }
-                  onCancel={() => setConfirm(null)}
-                  onConfirm={() => void actions.deleteDraft()}
+                  onCancel={() => {
+                    setConfirm(null);
+                    backToSearch();
+                  }}
+                  onConfirm={() => {
+                    setConfirm(null);
+                    backToSearch();
+                    run('delete', 'Deleting…', actions.deleteDraft);
+                  }}
                 />
               ) : (
-                <Item label="Delete draft" onSelect={() => setConfirm('delete')} />
+                <Item label="Delete draft" value={labels.delete || ''} onSelect={() => setConfirm('delete')} />
               )}
             </Command.Group>
           </Command.List>
@@ -260,10 +311,28 @@ function Item({ label, value = '', kbd, onSelect }: { label: string; value?: str
 }
 
 function Choices({ options, current, onPick, onClose }: { options: { id: string; label: string }[]; current: string; onPick(id: string): void; onClose(): void }) {
+  const at = Math.max(0, options.findIndex((o) => o.id === current));
   return (
-    <div className="choices" role="group" onKeyDown={(e) => (e.key === 'ArrowLeft' || e.key === 'Escape') && (e.stopPropagation(), onClose())}>
+    <div
+      className="choices"
+      role="group"
+      data-local-escape
+      onKeyDown={(e) => {
+        const buttons = [...e.currentTarget.querySelectorAll('button')];
+        const i = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        if (e.key === 'ArrowLeft' || e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          onClose();
+        } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          e.stopPropagation(); // cmdk would otherwise move its own selection
+          buttons[(i + (e.key === 'ArrowDown' ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+        } else if (e.key === 'Enter') e.stopPropagation();
+      }}
+    >
       {options.map((o, i) => (
-        <button key={o.id} type="button" autoFocus={i === 0} aria-pressed={o.id === current} onClick={() => onPick(o.id)}>
+        <button key={o.id} type="button" autoFocus={i === at} aria-pressed={o.id === current} onClick={() => onPick(o.id)}>
           {o.label}
         </button>
       ))}
@@ -273,7 +342,19 @@ function Choices({ options, current, onPick, onClose }: { options: { id: string;
 
 function Confirm({ text, action, extra, onCancel, onConfirm }: { text: string; action: string; extra?: ReactNode; onCancel(): void; onConfirm(): void }) {
   return (
-    <div className="confirm" role="alertdialog" aria-label={text}>
+    <div
+      className="confirm"
+      role="alertdialog"
+      aria-label={text}
+      data-local-escape
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          onCancel();
+        }
+        e.stopPropagation(); // keep Enter/arrows on the focused button, not cmdk
+      }}
+    >
       <span>{text}</span>
       {extra}
       <span className="actions">
