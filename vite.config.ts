@@ -27,6 +27,8 @@ export default defineConfig({
         display: 'standalone',
         background_color: THEME_COLOR.paper,
         theme_color: THEME_COLOR.paper,
+        // R1: an installed app opens .kansoletter files in the reader (Chromium desktop only; the Reader reads window.launchQueue)
+        file_handlers: [{ action: '/l', accept: { 'application/x-kansoletter': ['.kansoletter'] } }],
         icons: [
           { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },

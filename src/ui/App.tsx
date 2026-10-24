@@ -4,13 +4,14 @@ import { countWords, dayKey } from '../core/words';
 import { StoreProvider, useStore } from './store';
 import { Landing } from './Landing';
 import { EditorShell, type LeaveGuard } from './EditorShell';
+import { Reader } from './Reader';
 import { requestPersistence } from './platform';
 
 type Route = { name: 'boot' } | { name: 'landing' } | { name: 'editor'; draftId: string };
 
 /**
  * Routing (R26): "/" opens the most recently edited draft, or Landing when the device has
- * no drafts. "/about" always shows Landing. App start shows only the ground color (21A).
+ * no drafts. "/about" always shows Landing; "/l" is the letter reader (see App). App start shows only the ground color (21A).
  */
 function Router({ initial }: { initial: DraftRecord[] }) {
   const { storage, refreshDrafts, broadcast } = useStore();
@@ -110,6 +111,12 @@ function Router({ initial }: { initial: DraftRecord[] }) {
 }
 
 export function App() {
+  // the letter reader (1A) stands alone: no drafts, no storage, no single-writer lock
+  if (location.pathname === '/l') return <Reader />;
+  return <Library />;
+}
+
+function Library() {
   const [initial, setInitial] = useState<DraftRecord[] | null>(null);
   const [slow, setSlow] = useState(false);
   useEffect(() => {

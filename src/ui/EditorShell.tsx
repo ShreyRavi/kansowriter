@@ -13,8 +13,9 @@ import { LibrarySidebar } from './LibrarySidebar';
 import { download, isMac, requestPersistence, safeFileName } from './platform';
 import { exportAll, importBackup } from './backupActions';
 import { applyUpdate, useUpdateReady } from './updates';
-import { FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
+import { EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
 import { setUnsavedProvider } from './unsaved';
+import { SendPanel } from './SendPanel';
 
 /** typing pause before the update notice may first appear while the chrome is faded */
 const UPDATE_IDLE_MS = 3000;
@@ -85,6 +86,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sidebar, setSidebar] = useState(false);
   const [palette, setPalette] = useState(false);
+  const [send, setSend] = useState(false);
   const [mountKey, setMountKey] = useState(0);
   /** the update notice, latched: it first appears only while the writer isn't mid-sentence, then stays */
   const [showUpdate, setShowUpdate] = useState(false);
@@ -382,8 +384,21 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     update({ theme: resolveTheme(settingsRef.current.theme) === 'night' ? 'paper' : 'night' });
   }, [update]);
 
+  /** Send as letter (3A): save the word being typed first, so the letter ends where the page does */
+  const openSend = useCallback(async () => {
+    setPalette(false);
+    setSidebar(false);
+    try {
+      await writerRef.current?.flush(true);
+    } catch {
+      // a failed save keeps its notice; the letter carries what storage has
+    }
+    setSend(true);
+  }, []);
+
   const actions: PaletteActions = useMemo(
     () => ({
+      sendLetter: () => void openSend(),
       newDraft: () => {
         setPalette(false);
         void leaveRef.current(() => onNew());
@@ -449,7 +464,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         return 'Reset';
       },
     }),
-    [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
+    [openSend, onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
   );
 
   // ---------- leaving with unsaved text ----------
@@ -549,6 +564,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       if (mod && !e.shiftKey && k === 'k') {
         e.preventDefault();
         setPalette((p) => !p);
+      } else if (mod && e.shiftKey && k === 'l') {
+        e.preventDefault();
+        if (!send) void openSend();
       } else if (mod && e.shiftKey && k === 'n') {
         e.preventDefault();
         toggleTheme();
@@ -565,12 +583,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         e.preventDefault();
         update({ focus: settingsRef.current.focus === 'sentence' ? 'off' : 'sentence' });
       } else if (e.key === 'Escape') {
-        if (!palette && !sidebar) reveal();
+        if (!palette && !sidebar && !send) reveal();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [palette, sidebar, reveal, toggleTheme, exportText, update]);
+  }, [palette, sidebar, send, reveal, toggleTheme, exportText, update, openSend]);
 
   // ---------- render ----------
   const goal = settings.goal;
@@ -584,7 +602,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     '--writing-line': String(face.line),
   } as CSSProperties;
   const night = resolveTheme(settings.theme) === 'night';
-  const chromeClass = `chrome${chromeVisible || palette || sidebar ? '' : ' hidden'}`;
+  const chromeClass = `chrome${chromeVisible || palette || sidebar || send ? '' : ' hidden'}`;
   const closeOverlay = () => {
     setPalette(false);
     setSidebar(false);
@@ -617,6 +635,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             onClick={toggleTheme}
           >
             {night ? <SunIcon /> : <MoonIcon />}
+          </button>
+          <button type="button" className="icon-btn hide-phone" aria-label="Send as letter" onClick={() => void openSend()}>
+            <EnvelopeIcon />
           </button>
           <button
             type="button"
@@ -757,6 +778,17 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             void leave(() => onNew(t));
           }}
           onExportAll={actions.exportAll}
+        />
+      )}
+      {send && (
+        <SendPanel
+          draftId={draftId}
+          title={title}
+          onClose={() => {
+            setSend(false);
+            // back to the text, after the dialog has handed focus back to where it was
+            requestAnimationFrame(() => viewRef.current?.focus());
+          }}
         />
       )}
       {palette && (

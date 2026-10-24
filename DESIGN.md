@@ -56,12 +56,15 @@ space:
   measure: 680px
   sidebar: 340px
   palette: 620px
+  sendPanel: 620px
+  endLink: 48px
   target: 44px
 motion:
   chromeFadeDelay: 3000ms
   chromeFade: 200ms
   goalSettle: 600ms
   feedback: 2000ms
+  endLinkDelay: 1500ms
 ---
 
 # Kansowriter design system
@@ -84,8 +87,8 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 | Palette row | 44px min, 4px radius, label left, value + key chip right; in-row editing; inline destructive confirm |
 | Sidebar row | title 17px Newsreader 500, when 12px, 2-line excerpt 13px, words 12px; selected row background |
 | Search field | 40px, magnifier icon, clear ✕ when filled, hidden label |
-| Reader | 680px column, hidden controls row, date line top-left, end-state link |
-| Send panel | 620px bottom panel (phone: sheet), primary Copy link / Download letter file |
+| Reader | 680px column, hidden controls row (play/pause, scrubber, Skip to the end), date line top-left, 2px replay line, end-state link 48px below the text after 1.5 s |
+| Send panel | 620px bottom panel 24px above the edge (phone: sheet, `rounded.sheet` top corners, max 60vh), live preview above, Replay / Final text only, start slider, size note, privacy line, primary Copy link / Download letter file |
 
 ## Browser surfaces
 Selection uses `selection`; caret 2px ink; focus-visible ring 2px accent, 2px offset; thin scrollbars in hairline; links underline offset 3px.
