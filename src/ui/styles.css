@@ -161,6 +161,8 @@ main.boot p { opacity: 1; animation: none; color: var(--c-ink); }
 .palette .bar { display: flex; align-items: center; gap: 12px; padding: 6px 16px; border-bottom: 1px solid var(--c-hairline); }
 .palette .bar:focus-within { border-bottom-color: var(--c-accent); }
 .palette .bar svg { color: var(--c-muted); flex: 0 0 auto; }
+.palette .close-btn { display: inline-flex; align-items: center; min-height: var(--space-target); padding: 0 4px; border: 0; background: none; cursor: pointer; color: var(--c-accent); font-family: var(--type-sans); font-size: var(--type-ui); }
+.palette .close-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .palette .bar input { flex: 1 1 auto; min-width: 0; height: 48px; border: 0; background: transparent; color: var(--c-ink); font: inherit; font-size: 16px; outline: none; }
 .palette [cmdk-list] { overflow-y: auto; padding: 8px; }
 .palette [cmdk-group-heading] { font-size: 12px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: var(--c-muted); padding: 10px 12px 4px; }
@@ -196,6 +198,8 @@ main.boot p { opacity: 1; animation: none; color: var(--c-ink); }
   .palette-wrap { padding: 0; }
   .palette { max-width: none; height: 100vh; height: 100dvh; max-height: none; border-radius: 0; border: 0; }
   .palette .stepper { display: inline-flex; }
+  .palette .close-label { position: static; width: auto; height: auto; overflow: visible; clip: auto; }
+  .palette .close-btn .key { display: none; }
   .notice { padding: 0 16px; }
 }
 @media (prefers-reduced-motion: reduce) {

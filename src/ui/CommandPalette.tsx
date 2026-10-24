@@ -140,7 +140,13 @@ export function CommandPalette({ onClose, actions, title, wordsToday }: { onClos
           <div className="bar">
             <SearchIcon />
             <Command.Input ref={inputRef} value={query} onValueChange={setQuery} placeholder="Search commands and settings" />
-            <span className="key">esc</span>
+            {/* a real button: on phones the sheet fills the screen and has no Esc key (ISSUE-001) */}
+            <button type="button" className="close-btn" onClick={onClose}>
+              <span className="close-label">Close</span>
+              <span className="key" aria-hidden="true">
+                esc
+              </span>
+            </button>
           </div>
           <Command.List>
             <Command.Empty>No commands match.</Command.Empty>
