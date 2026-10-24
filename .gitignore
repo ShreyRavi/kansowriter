@@ -1,7 +1,8 @@
 node_modules/
 dist/
 .vercel/
-.gstack/
+.gstack/*
+!.gstack/pregate.json
 coverage/
 test-results/
 playwright-report/
