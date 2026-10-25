@@ -28,7 +28,11 @@ describe('reader: KOP runs → CodeMirror', () => {
   it('letter content never creates a loading or clickable element (R6)', () => {
     const host = document.createElement('div');
     document.body.appendChild(host);
-    const view = createReaderView(host, '# Hi\n\n![x](https://example.com/p.png)\n<img src=https://example.com/a.png>\n<iframe></iframe>\n[a link](https://example.com)', 'Letter');
+    const view = createReaderView(
+      host,
+      '# Hi\n\n![x](https://example.com/p.png)\n<img src=https://example.com/a.png>\n<iframe></iframe>\n[a link](https://example.com)',
+      'Letter',
+    );
     expect(host.querySelectorAll('img, iframe, a, object, embed, video, audio, link, script').length).toBe(0);
     expect(view.state.doc.toString()).toContain('![x](https://example.com/p.png)');
     view.destroy();

@@ -7,7 +7,15 @@ import { DraftWriter, type Change } from '../src/storage/writer';
 import { newDraft, replay } from '../src/core/draft';
 import type { Op } from '../src/core/kop';
 import type { AppendBatch, StorageAdapter } from '../src/core/storage';
-import { buildLetter, defaultStart, encodeLetter, letterMeta, LETTER_CAP_BYTES, LINK_THRESHOLD_BYTES, type Letter } from '../src/core/letter';
+import {
+  buildLetter,
+  defaultStart,
+  encodeLetter,
+  letterMeta,
+  LETTER_CAP_BYTES,
+  LINK_THRESHOLD_BYTES,
+  type Letter,
+} from '../src/core/letter';
 
 // mulberry32
 function rng(seed: number) {
@@ -46,7 +54,18 @@ function memoryStorage(ops: Op[]): StorageAdapter {
 async function main() {
   const T0 = Date.UTC(2026, 9, 20, 7, 30);
   const ops: Op[] = [];
-  const w = new DraftWriter(memoryStorage(ops), newDraft('m', T0), '', { onStale: () => { throw new Error('stale'); }, onCommit: () => {} }, () => -60);
+  const w = new DraftWriter(
+    memoryStorage(ops),
+    newDraft('m', T0),
+    '',
+    {
+      onStale: () => {
+        throw new Error('stale');
+      },
+      onCommit: () => {},
+    },
+    () => -60,
+  );
   let now = T0;
 
   const len = () => w.currentText.length;
@@ -129,12 +148,19 @@ async function main() {
   const row = async (label: string, letter: Letter) => {
     const enc = await encodeLetter(letter);
     const json = new TextEncoder().encode(JSON.stringify(letter)).byteLength;
-    const verdict = enc.length <= LINK_THRESHOLD_BYTES ? 'link' : enc.length <= LETTER_CAP_BYTES ? 'over link threshold (trim/file)' : 'over cap';
-    console.log(`${label.padEnd(34)} ops ${String(letter.ops.length).padStart(5)}  json ${String(json).padStart(7)} B  encoded ${String(enc.length).padStart(6)} B  ${(enc.length / 1024).toFixed(1).padStart(5)} KB  → ${verdict}`);
+    const verdict =
+      enc.length <= LINK_THRESHOLD_BYTES ? 'link' : enc.length <= LETTER_CAP_BYTES ? 'over link threshold (trim/file)' : 'over cap';
+    console.log(
+      `${label.padEnd(34)} ops ${String(letter.ops.length).padStart(5)}  json ${String(json).padStart(7)} B  encoded ${String(enc.length).padStart(6)} B  ${(enc.length / 1024).toFixed(1).padStart(5)} KB  → ${verdict}`,
+    );
   };
 
-  console.log(`draft: ${text.split(/\s+/).filter(Boolean).length} words, ${text.length} chars, ${ops.length} ops, sessions at ops [${sessions.map((s) => s.opIndex).join(', ')}]`);
-  console.log(`LINK_THRESHOLD_BYTES = ${LINK_THRESHOLD_BYTES} (${LINK_THRESHOLD_BYTES / 1024} KB), LETTER_CAP_BYTES = ${LETTER_CAP_BYTES}\n`);
+  console.log(
+    `draft: ${text.split(/\s+/).filter(Boolean).length} words, ${text.length} chars, ${ops.length} ops, sessions at ops [${sessions.map((s) => s.opIndex).join(', ')}]`,
+  );
+  console.log(
+    `LINK_THRESHOLD_BYTES = ${LINK_THRESHOLD_BYTES} (${LINK_THRESHOLD_BYTES / 1024} KB), LETTER_CAP_BYTES = ${LETTER_CAP_BYTES}\n`,
+  );
   await row(`replay from default start (op ${start})`, buildLetter('', ops, start, 'replay', letterMeta(sessions, ops, start)));
   await row('final text only', buildLetter('', ops, start, 'final', letterMeta(sessions, ops, ops.length)));
   await row('replay whole draft (op 0)', buildLetter('', ops, 0, 'replay', letterMeta(sessions, ops, 0)));

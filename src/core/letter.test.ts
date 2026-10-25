@@ -48,35 +48,38 @@ const PIECES = ['a', 'b', ' ', '\n', 'é', 'e\u0301', '😀', '👩‍💻', 'ñ
 const arbText = fc.array(fc.constantFrom(...PIECES), { minLength: 1, maxLength: 6 }).map((a) => a.join(''));
 
 function arbEdit(len: number): fc.Arbitrary<Run[]> {
-  return fc
-    .tuple(fc.nat({ max: len }), fc.nat({ max: 4 }), fc.option(arbText, { nil: undefined }))
-    .map(([pos, del, ins]) => {
-      const d = Math.min(del, len - pos);
-      return normalize([pos, ...(ins ? [ins] : []), -d, len - pos - d]);
-    });
+  return fc.tuple(fc.nat({ max: len }), fc.nat({ max: 4 }), fc.option(arbText, { nil: undefined })).map(([pos, del, ins]) => {
+    const d = Math.min(del, len - pos);
+    return normalize([pos, ...(ins ? [ins] : []), -d, len - pos - d]);
+  });
 }
 
 const arbOps = (base: string, n: number): fc.Arbitrary<Op[]> =>
-  fc.array(fc.tuple(fc.nat({ max: 10_000 }), fc.nat({ max: 2000 }), fc.integer({ min: 0, max: 1 }), fc.nat(), fc.nat()), { maxLength: n }).map((specs) => {
-    // deterministic expansion from seeds so lengths line up
-    const ops: Op[] = [];
-    let text = base;
-    for (const [dt, d, two, s1, s2] of specs) {
-      const e1 = fc.sample(arbEdit(text.length), { seed: s1, numRuns: 1 })[0]!;
-      let runs = e1;
-      if (two) {
-        const mid = applyRuns(text, e1);
-        runs = compose(e1, fc.sample(arbEdit(mid.length), { seed: s2, numRuns: 1 })[0]!);
+  fc
+    .array(fc.tuple(fc.nat({ max: 10_000 }), fc.nat({ max: 2000 }), fc.integer({ min: 0, max: 1 }), fc.nat(), fc.nat()), { maxLength: n })
+    .map((specs) => {
+      // deterministic expansion from seeds so lengths line up
+      const ops: Op[] = [];
+      let text = base;
+      for (const [dt, d, two, s1, s2] of specs) {
+        const e1 = fc.sample(arbEdit(text.length), { seed: s1, numRuns: 1 })[0]!;
+        let runs = e1;
+        if (two) {
+          const mid = applyRuns(text, e1);
+          runs = compose(e1, fc.sample(arbEdit(mid.length), { seed: s2, numRuns: 1 })[0]!);
+        }
+        const op = makeOp(dt, d, runs);
+        ops.push(op);
+        text = apply(text, op);
       }
-      const op = makeOp(dt, d, runs);
-      ops.push(op);
-      text = apply(text, op);
-    }
-    return ops;
-  });
+      return ops;
+    });
 
 const arbLetter: fc.Arbitrary<Letter> = fc
-  .tuple(fc.array(fc.constantFrom(...PIECES), { maxLength: 8 }).map((a) => a.join('')), fc.option(fc.record({ writtenAt: fc.nat(), tz: fc.integer({ min: -720, max: 840 }) }), { nil: undefined }))
+  .tuple(
+    fc.array(fc.constantFrom(...PIECES), { maxLength: 8 }).map((a) => a.join('')),
+    fc.option(fc.record({ writtenAt: fc.nat(), tz: fc.integer({ min: -720, max: 840 }) }), { nil: undefined }),
+  )
   .chain(([base, meta]) =>
     arbOps(base, 25).map((ops) => {
       const l: Letter = { v: 1, baseText: base, ops };
@@ -91,7 +94,16 @@ describe('letter codec', () => {
   });
 
   it('round trips', async () => {
-    const l: Letter = { v: 1, baseText: 'Dear 👩‍💻,\n', ops: [[0, 400, 12, 'café'], [5000, 0, 14, -2], [10, 0, 'e\u0301', 14]], meta: { writtenAt: 1_761_000_000_000, tz: -60 } };
+    const l: Letter = {
+      v: 1,
+      baseText: 'Dear 👩‍💻,\n',
+      ops: [
+        [0, 400, 12, 'café'],
+        [5000, 0, 14, -2],
+        [10, 0, 'e\u0301', 14],
+      ],
+      meta: { writtenAt: 1_761_000_000_000, tz: -60 },
+    };
     const enc = await encodeLetter(l);
     expect(enc.startsWith('v1.')).toBe(true);
     expect(enc).toMatch(/^v1\.[A-Za-z0-9_-]+$/);
@@ -137,7 +149,9 @@ describe('letter caps', () => {
 
 describe('letter schema (R24)', () => {
   it('accepts and drops unknown meta keys', async () => {
-    const l = await decodeLetter(await raw({ v: 1, baseText: 'x', ops: [], meta: { writtenAt: 5, tz: 0, signature: 'S', nested: { a: 1 } } }));
+    const l = await decodeLetter(
+      await raw({ v: 1, baseText: 'x', ops: [], meta: { writtenAt: 5, tz: 0, signature: 'S', nested: { a: 1 } } }),
+    );
     expect(l).toEqual({ v: 1, baseText: 'x', ops: [], meta: { writtenAt: 5, tz: 0 } });
     const empty = await decodeLetter(await raw({ v: 1, baseText: 'x', ops: [], meta: { future: true } }));
     expect(empty.meta).toEqual({});
@@ -168,7 +182,19 @@ describe('letter schema (R24)', () => {
 
   it('rejects runs that do not cover the document', async () => {
     await rejects(decodeLetter(await raw({ v: 1, baseText: 'abc', ops: [[0, 0, 2]] })), 'damaged');
-    await rejects(decodeLetter(await raw({ v: 1, baseText: 'abc', ops: [[0, 0, 3, 'x'], [0, 0, 3]] })), 'damaged');
+    await rejects(
+      decodeLetter(
+        await raw({
+          v: 1,
+          baseText: 'abc',
+          ops: [
+            [0, 0, 3, 'x'],
+            [0, 0, 3],
+          ],
+        }),
+      ),
+      'damaged',
+    );
     await rejects(decodeLetter(await raw({ v: 1, baseText: '', ops: [[-1, 0, 'x']] })), 'damaged');
     await rejects(decodeLetter(await raw({ v: 1, baseText: '', ops: [[0, 0, '']] })), 'damaged');
   });
@@ -194,13 +220,28 @@ describe('letter schema (R24)', () => {
 
 describe('replay pacing (R12, R18)', () => {
   it('caps pauses over 4 s at 1.5 s, keeps shorter ones', () => {
-    const steps = replaySteps({ v: 1, baseText: '', ops: [[10_000, 0, 'a'], [3000, 0, 1, 'b'], [4001, 0, 2, -1]] });
+    const steps = replaySteps({
+      v: 1,
+      baseText: '',
+      ops: [
+        [10_000, 0, 'a'],
+        [3000, 0, 1, 'b'],
+        [4001, 0, 2, -1],
+      ],
+    });
     expect(steps.map((s) => s.at)).toEqual([1500, 4500, 6000]);
     expect(steps[2]!.caret).toBe(2);
   });
 
   it('spreads a merged word evenly over d, one step per character', () => {
-    const steps = replaySteps({ v: 1, baseText: 'x', ops: [[200, 400, 1, 'Hello'], [100, 0, 6, ' ']] });
+    const steps = replaySteps({
+      v: 1,
+      baseText: 'x',
+      ops: [
+        [200, 400, 1, 'Hello'],
+        [100, 0, 6, ' '],
+      ],
+    });
     expect(steps.map((s) => s.at)).toEqual([200, 300, 400, 500, 600, 700]);
     expect(steps.map((s) => s.caret)).toEqual([2, 3, 4, 5, 6, 7]);
     expect(steps[0]!.runs).toEqual([1, 'H']);
@@ -228,7 +269,12 @@ describe('replay pacing (R12, R18)', () => {
 
   it('a replace emits its delete first, then the characters', () => {
     const steps = replaySteps({ v: 1, baseText: 'teh end', ops: [[0, 200, 'the', -3, 4]] });
-    expect(steps.map((s) => s.runs)).toEqual([[-3, 4], ['t', 4], [1, 'h', 4], [2, 'e', 4]]);
+    expect(steps.map((s) => s.runs)).toEqual([
+      [-3, 4],
+      ['t', 4],
+      [1, 'h', 4],
+      [2, 'e', 4],
+    ]);
     expect(steps.map((s) => s.at)).toEqual([0, 0, 100, 200]);
     expect(steps[0]!.caret).toBe(0);
   });

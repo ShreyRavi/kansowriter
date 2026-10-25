@@ -40,7 +40,10 @@ export interface Letter {
 
 export type LetterErrorKind = 'damaged' | 'too-large' | 'unsupported';
 export class LetterError extends Error {
-  constructor(readonly kind: LetterErrorKind, message?: string) {
+  constructor(
+    readonly kind: LetterErrorKind,
+    message?: string,
+  ) {
     super(message ?? kind);
   }
 }

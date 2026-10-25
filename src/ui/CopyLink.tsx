@@ -7,7 +7,17 @@ const FEEDBACK_MS = 2000; // motion.feedback
  * is blocked it reads "Couldn’t copy. Select the link below" and the link appears selected
  * under the button, ready for ⌘C / Ctrl C or the phone's Copy.
  */
-export function CopyLink({ link, label = 'Copy link', className = 'text-btn', disabled }: { link: string; label?: string; className?: string; disabled?: boolean }) {
+export function CopyLink({
+  link,
+  label = 'Copy link',
+  className = 'text-btn',
+  disabled,
+}: {
+  link: string;
+  label?: string;
+  className?: string;
+  disabled?: boolean;
+}) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   /** the selected link stays after the label settles: it is how the link gets copied now */
   const [field, setField] = useState(false);
@@ -41,10 +51,19 @@ export function CopyLink({ link, label = 'Copy link', className = 'text-btn', di
   return (
     <span className="copy-link">
       <button type="button" className={className} disabled={disabled} onClick={() => void copy()}>
-        <span aria-live="polite">{state === 'copied' ? 'Copied' : state === 'failed' ? 'Couldn’t copy. Select the link below' : label}</span>
+        <span aria-live="polite">
+          {state === 'copied' ? 'Copied' : state === 'failed' ? 'Couldn’t copy. Select the link below' : label}
+        </span>
       </button>
       {field && (
-        <input ref={fieldRef} className="link-field" readOnly value={link} aria-label="Letter link" onFocus={(e) => e.currentTarget.select()} />
+        <input
+          ref={fieldRef}
+          className="link-field"
+          readOnly
+          value={link}
+          aria-label="Letter link"
+          onFocus={(e) => e.currentTarget.select()}
+        />
       )}
     </span>
   );

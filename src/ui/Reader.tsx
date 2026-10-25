@@ -3,12 +3,7 @@ import { decodeLetter, LETTER_FILE_EXTENSION, lettersSupported, type Letter } fr
 import { CopyLink } from './CopyLink';
 import { prefersReducedMotion, Replay } from './Replay';
 
-type View =
-  | { name: 'decoding' }
-  | { name: 'empty' }
-  | { name: 'damaged' }
-  | { name: 'unsupported' }
-  | { name: 'letter'; letter: Letter };
+type View = { name: 'decoding' } | { name: 'empty' } | { name: 'damaged' } | { name: 'unsupported' } | { name: 'letter'; letter: Letter };
 
 /** Chromium's File Handling API (an installed app opening a .kansoletter, R1) */
 interface LaunchParams {

@@ -36,7 +36,9 @@ const FEEDBACK_MS = 2000; // motion.feedback
 function startLabel(rec: DraftRecord, start: number): string {
   if (start === 0) return 'the beginning';
   const s = rec.sessions.find((x) => x.opIndex === start);
-  return s ? new Date(s.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : 'the beginning';
+  return s
+    ? new Date(s.at).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+    : 'the beginning';
 }
 
 /**
@@ -58,7 +60,11 @@ export function SendPanel({ draftId, title, onClose }: { draftId: string; title:
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [loaded, ops, snaps] = await Promise.all([storage.loadDraft(draftId), storage.loadOps(draftId), storage.loadSnapshots(draftId)]);
+      const [loaded, ops, snaps] = await Promise.all([
+        storage.loadDraft(draftId),
+        storage.loadOps(draftId),
+        storage.loadSnapshots(draftId),
+      ]);
       if (!alive) return;
       if (!loaded) return setSource('error');
       const base = snaps.find((s) => s.opIndex === 0)?.text ?? '';
@@ -191,7 +197,9 @@ export function SendPanel({ draftId, title, onClose }: { draftId: string; title:
                 </button>
               )}
             </div>
-            <p className="send-privacy">Anyone with this link can read the letter. It lives in the link, in your chat and in browser history.</p>
+            <p className="send-privacy">
+              Anyone with this link can read the letter. It lives in the link, in your chat and in browser history.
+            </p>
           </>
         )}
       </div>

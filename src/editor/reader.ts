@@ -147,10 +147,11 @@ export class ReplayPlayer {
   }
 
   private schedule() {
-    if (!this.frame) this.frame = requestAnimationFrame(() => {
-      this.frame = 0;
-      this.tick();
-    });
+    if (!this.frame)
+      this.frame = requestAnimationFrame(() => {
+        this.frame = 0;
+        this.tick();
+      });
   }
 
   private tick() {
@@ -170,7 +171,12 @@ export class ReplayPlayer {
       if (this.index === upto) {
         this.rebuild = null;
         const caret = Math.min(this.caret, doc.length);
-        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: doc }, selection: { anchor: caret }, effects: setCaret.of(caret), scrollIntoView: this.playing });
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: doc },
+          selection: { anchor: caret },
+          effects: setCaret.of(caret),
+          scrollIntoView: this.playing,
+        });
       }
     } else if (upto > this.index) {
       let cs = ChangeSet.empty(view.state.doc.length);
