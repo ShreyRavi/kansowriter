@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
-import { decodeLetter, LETTER_FILE_EXTENSION, lettersSupported, type Letter } from '../core/letter';
+import { decodeLetter, LETTER_CAP_BYTES, LETTER_FILE_EXTENSION, LETTER_MIME, lettersSupported, type Letter } from '../core/letter';
 import { CopyLink } from './CopyLink';
-import { prefersReducedMotion, Replay } from './Replay';
+import { Replay } from './Replay';
 
 type View = { name: 'decoding' } | { name: 'empty' } | { name: 'damaged' } | { name: 'unsupported' } | { name: 'letter'; letter: Letter };
 
@@ -15,7 +15,11 @@ declare global {
   }
 }
 
-const ACCEPT = `${LETTER_FILE_EXTENSION},application/x-kansoletter`;
+const ACCEPT = `${LETTER_FILE_EXTENSION},${LETTER_MIME}`;
+/** a letter file is its encoded text plus, at most, a trailing newline or BOM: anything bigger is refused unread */
+const FILE_SLACK_BYTES = 64;
+
+const hasFiles = (e: DragEvent) => [...e.dataTransfer.types].includes('Files');
 
 /**
  * Letter reader at /l (1A, 7A). Letter only: it never opens drafts, storage or the
@@ -29,11 +33,10 @@ export function Reader() {
   const [ended, setEnded] = useState(false);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const reduced = prefersReducedMotion();
+  /** each open (link, file, cleared hash) supersedes any decode still running */
   const seq = useRef(0);
 
-  const open = useCallback(async (encoded: string) => {
-    const mine = ++seq.current;
+  const open = useCallback(async (encoded: string, mine = ++seq.current) => {
     setEnded(false);
     if (!lettersSupported()) return setView({ name: 'unsupported' });
     setView({ name: 'decoding' });
@@ -51,10 +54,17 @@ export function Reader() {
   const openFile = useCallback(
     async (file: File | null | undefined) => {
       if (!file) return;
+      const mine = ++seq.current;
+      // over the cap it can't be a letter: never read it into memory
+      if (file.size > LETTER_CAP_BYTES + FILE_SLACK_BYTES) {
+        setEnded(false);
+        return setView({ name: 'damaged' });
+      }
       try {
-        await open(await file.text());
+        const text = await file.text();
+        if (mine === seq.current) await open(text, mine);
       } catch {
-        setView({ name: 'damaged' });
+        if (mine === seq.current) setView({ name: 'damaged' });
       }
     },
     [open],
@@ -64,8 +74,11 @@ export function Reader() {
     document.title = 'A letter — Kansowriter';
     const fromHash = () => {
       const hash = location.hash.slice(1);
-      if (hash) void open(hash);
-      else setView((v) => (v.name === 'decoding' ? { name: 'empty' } : v));
+      if (hash) return void open(hash);
+      // a cleared fragment: drop whatever was showing or still decoding
+      seq.current++;
+      setEnded(false);
+      setView({ name: 'empty' });
     };
     fromHash();
     window.addEventListener('hashchange', fromHash);
@@ -77,15 +90,24 @@ export function Reader() {
     return () => window.removeEventListener('hashchange', fromHash);
   }, [open, openFile]);
 
-  const onDrop = (e: DragEvent) => {
-    e.preventDefault();
-    setDragging(false);
-    void openFile(e.dataTransfer.files[0]);
-  };
-  const onDragOver = (e: DragEvent) => {
-    if (![...e.dataTransfer.types].includes('Files')) return;
-    e.preventDefault();
-    setDragging(true);
+  // a file dropped anywhere on the page opens here; the browser never navigates away to it
+  const dropHandlers = {
+    onDragOver: (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+      setDragging(true);
+    },
+    onDragLeave: (e: DragEvent) => {
+      // only when the pointer leaves the page, not when it crosses into a child
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+    },
+    onDrop: (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      setDragging(false);
+      void openFile(e.dataTransfer.files[0]);
+    },
   };
 
   const fileButton = (cls: string) => (
@@ -111,11 +133,11 @@ export function Reader() {
 
   if (view.name === 'letter')
     return (
-      <main className="reader" aria-label="Letter">
+      <main className="reader" aria-label="Letter" {...dropHandlers}>
         <h1 className="sr-only">A letter</h1>
-        <Replay letter={view.letter} instant={reduced} controls label="Letter" className="reader-replay" onDone={() => setEnded(true)}>
-          {(ended || reduced) && (
-            <a className={`reader-end ui${reduced ? ' now' : ''}`} href="/">
+        <Replay letter={view.letter} controls label="Letter" className="reader-replay" onEnded={setEnded}>
+          {ended && (
+            <a className="reader-end ui" href="/">
               Written with Kansowriter
             </a>
           )}
@@ -124,21 +146,16 @@ export function Reader() {
     );
 
   return (
-    <main className="reader reader-state">
+    <main className="reader reader-state" {...dropHandlers}>
       <h1 className="sr-only">A letter</h1>
       {view.name === 'empty' && (
-        <div
-          className={`drop-zone${dragging ? ' over' : ''}`}
-          onDragOver={onDragOver}
-          onDragLeave={() => setDragging(false)}
-          onDrop={onDrop}
-        >
+        <div className={`drop-zone${dragging ? ' over' : ''}`}>
           {fileButton('open-file')}
           <p className="ui drop-hint">or drop it here</p>
         </div>
       )}
       {view.name === 'damaged' && (
-        <div className="reader-message" onDragOver={onDragOver} onDrop={onDrop}>
+        <div className="reader-message">
           <p role="alert">This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.</p>
           {fileButton('text-btn')}
         </div>

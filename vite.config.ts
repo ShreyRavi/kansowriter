@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { THEME_COLOR } from './src/ui/theme-colors';
+import { LETTER_FILE_EXTENSION, LETTER_MIME } from './src/core/letter';
 
 export default defineConfig({
   plugins: [
@@ -18,6 +19,23 @@ export default defineConfig({
         clientsClaim: false,
         globPatterns: ['**/*.{js,css,html,woff2,svg,png,ico,webmanifest}'],
         navigateFallback: '/index.html',
+        // A letter link must open the reader of the app as deployed now, not whatever shell this
+        // device cached: /l never takes the precached fallback; it goes to the network first and
+        // falls back to its own cached copy offline (once it has been fetched).
+        navigateFallbackDenylist: [/^\/l\/?$/],
+        runtimeCaching: [
+          {
+            urlPattern: ({ request, url }) => request.mode === 'navigate' && /^\/l\/?$/.test(url.pathname),
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'letter-reader',
+              networkTimeoutSeconds: 4,
+              expiration: { maxEntries: 2 },
+              // the fragment (the letter) is never sent; only the shell is cached
+              matchOptions: { ignoreSearch: true },
+            },
+          },
+        ],
       },
       manifest: {
         name: 'Kansowriter',
@@ -28,7 +46,7 @@ export default defineConfig({
         background_color: THEME_COLOR.paper,
         theme_color: THEME_COLOR.paper,
         // R1: an installed app opens .kansoletter files in the reader (Chromium desktop only; the Reader reads window.launchQueue)
-        file_handlers: [{ action: '/l', accept: { 'application/x-kansoletter': ['.kansoletter'] } }],
+        file_handlers: [{ action: '/l', accept: { [LETTER_MIME]: [LETTER_FILE_EXTENSION] } }],
         icons: [
           { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any' },
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },

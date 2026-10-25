@@ -342,6 +342,59 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(loaded.text).toBe('good');
   });
 
+  it('loadLetterSource reads record, base and ops up to head; text matches loadDraft (through a snapshot)', async () => {
+    const { w } = await makeWriter();
+    for (let i = 0; i < 502; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'x'] : ['x'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 10_000);
+    const src = (await db.loadLetterSource('d1'))!;
+    expect(src.record.head).toBe(502);
+    expect(src.base).toBe('');
+    expect(src.ops).toHaveLength(502);
+    expect(src.text).toBe((await db.loadDraft('d1'))!.text);
+    expect(src.text).toBe('x'.repeat(502));
+    expect(src.damaged).toBe(false);
+    expect(await db.loadLetterSource('nope')).toBeNull();
+  });
+
+  it('loadLetterSource starts from the opIndex-0 base after clear-history', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'one', T0);
+    await w.flush(true, T0 + 400);
+    const rec = (await db.loadDraft('d1'))!.record;
+    const cleared = await db.clearHistory('d1', 'one', T0 + 500, rec.head, rec.epoch);
+    const fresh = new DraftWriter(
+      db,
+      (cleared as { record: typeof rec }).record,
+      'one',
+      { onStale: () => {}, onCommit: () => {} },
+      () => 0,
+    );
+    fresh.push({ runs: [3, '!'], at: T0 + 600, kind: 'other' });
+    await fresh.flush(true, T0 + 600);
+    const src = (await db.loadLetterSource('d1'))!;
+    expect(src).toMatchObject({ base: 'one', ops: [[0, 0, 3, '!']], text: 'one!', damaged: false });
+  });
+
+  it('loadLetterSource on a damaged draft truncates ops to those that apply', async () => {
+    const { w } = await makeWriter();
+    typeWord(w, 'good', T0);
+    await w.flush(true, T0 + 500);
+    await db.db.ops.bulkAdd([
+      { draftId: 'd1', seq: 1, op: [0, 0, 99, 'x'] },
+      { draftId: 'd1', seq: 2, op: [0, 0, 4, '!'] },
+    ]);
+    await db.db.drafts.update('d1', { head: 3 });
+    const src = (await db.loadLetterSource('d1'))!;
+    expect(src.damaged).toBe(true);
+    expect(src.text).toBe('good');
+    expect(src.text).toBe((await db.loadDraft('d1'))!.text);
+    expect(src.ops).toHaveLength(1);
+    expect(replay(null, src.ops)).toBe('good');
+  });
+
   it('DamagedDraftError carries the head and epoch the readable text came from; a repair after a change is refused', async () => {
     const { w } = await makeWriter();
     typeWord(w, 'good', T0);

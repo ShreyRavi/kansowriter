@@ -214,3 +214,31 @@ export async function setVisibility(page: Page, state: 'hidden' | 'visible') {
 
 /** A download's file name as the app asked for it. Linux WebKit saves spaces as underscores (CI run 40140242486). */
 export const requestedName = (d: { suggestedFilename(): string }) => d.suggestedFilename().replace(/_/g, ' ');
+
+/** A letter payload as the app encodes it (src/core/letter.ts, R24): runs are KOP v1 ops [dt, d, ...runs]. */
+export interface TestLetter {
+  v: 1;
+  baseText: string;
+  ops: (number | string)[][];
+  meta?: { writtenAt?: number; tz?: number };
+}
+
+/** Encode a letter in Node (JSON → deflate-raw → base64url, "v1." prefix), the way encodeLetter does. */
+export async function encodeTestLetter(letter: TestLetter): Promise<string> {
+  const { deflateRawSync } = await import('node:zlib');
+  return 'v1.' + deflateRawSync(Buffer.from(JSON.stringify(letter))).toString('base64url');
+}
+
+/** Decode a letter link or "v1.…" payload in Node, without the app. */
+export async function decodeTestLetter(linkOrPayload: string): Promise<TestLetter> {
+  const { inflateRawSync } = await import('node:zlib');
+  const payload = linkOrPayload.includes('#') ? linkOrPayload.slice(linkOrPayload.indexOf('#') + 1) : linkOrPayload;
+  if (!payload.startsWith('v1.')) throw new Error(`not a v1 letter: ${payload.slice(0, 20)}`);
+  return JSON.parse(inflateRawSync(Buffer.from(payload.slice(3), 'base64url')).toString('utf8')) as TestLetter;
+}
+
+/**
+ * The reader path for a letter link: production builds link to the canonical origin (D4,
+ * src/ui/letterLinks.ts), so tests open the same fragment on the server under test.
+ */
+export const readerPath = (link: string) => `/l${link.slice(link.indexOf('#'))}`;

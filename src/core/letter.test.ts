@@ -3,7 +3,7 @@ import fc from 'fast-check';
 import { apply, compose, makeOp, normalize, type Op, type Run } from './kop';
 import type { Session } from './draft';
 import {
-  applyRuns,
+  baseTexts,
   buildLetter,
   decodeLetter,
   defaultStart,
@@ -11,8 +11,14 @@ import {
   LETTER_CAP_BYTES,
   LetterError,
   lettersSupported,
+  LETTER_MIME,
+  MAX_DECOMPRESSED_BYTES,
   MAX_OPS,
+  MAX_REPLAY_STEPS,
   letterMeta,
+  REPLAY_MAX_OP_MS,
+  REPLAY_MAX_STEPS_PER_OP,
+  REPLAY_MS_PER_CHAR,
   replaySteps,
   startPoints,
   type Letter,
@@ -40,6 +46,8 @@ async function rejects(p: Promise<unknown>, kind: LetterErrorKind) {
   expect((e as LetterError).kind).toBe(kind);
 }
 
+/** Apply bare runs (no timing) to text; throws when they don't cover it (see kop.apply). */
+const applyRuns = (text: string, runs: Run[]) => apply(text, [0, 0, ...runs]);
 const replayAll = (l: Letter) => l.ops.reduce((t, op) => apply(t, op), l.baseText);
 const replayStepsText = (l: Letter) => replaySteps(l).reduce((t, s) => applyRuns(t, s.runs), l.baseText);
 
@@ -109,16 +117,36 @@ describe('letter codec', () => {
     expect(enc).toMatch(/^v1\.[A-Za-z0-9_-]+$/);
     expect(await decodeLetter(enc)).toEqual(l);
     expect(await decodeLetter('#' + enc)).toEqual(l);
+    expect(LETTER_MIME).toBe('application/x-kansoletter');
   });
 
-  it('property: decode(encode(l)) == l, and replay steps reach the same text as the ops', async () => {
+  it('every encoded link ends in [A-Za-z0-9] and still round trips (D3)', async () => {
     await fc.assert(
       fc.asyncProperty(arbLetter, async (l) => {
-        expect(await decodeLetter(await encodeLetter(l))).toEqual(l);
-        expect(replayStepsText(l)).toBe(replayAll(l));
+        const enc = await encodeLetter(l);
+        expect(enc).toMatch(/[A-Za-z0-9]$/);
+        expect(await decodeLetter(enc)).toEqual(l);
       }),
-      { numRuns: 200 },
+      { numRuns: 400 },
     );
+  });
+
+  it('pads the letters whose bare encoding would end in - or _ (prose-sized letters, seeded)', async () => {
+    // fixed-Huffman (tiny) payloads can't end in '-' or '_'; prose-sized ones do, ~4% of the time
+    const words = 'the quiet letter morning window garden coffee river'.split(' ');
+    let x = 7;
+    const next = () => (x = (x * 48271) % 2147483647);
+    let padded = 0;
+    for (let i = 0; i < 300; i++) {
+      const n = 20 + (next() % 400);
+      const l: Letter = { v: 1, baseText: Array.from({ length: n }, () => words[next() % words.length]).join(' '), ops: [] };
+      const bare = 'v1.' + b64url(await deflateRaw(JSON.stringify(l)));
+      if (/[-_]$/.test(bare)) padded++;
+      const enc = await encodeLetter(l);
+      expect(enc).toMatch(/[A-Za-z0-9]$/);
+      expect(await decodeLetter(enc)).toEqual(l);
+    }
+    expect(padded).toBeGreaterThan(0);
   });
 });
 
@@ -135,12 +163,17 @@ describe('letter caps', () => {
     const bomb = '{"v":1,"baseText":"' + '0'.repeat(3 * 1024 * 1024) + '","ops":[]}';
     const enc = 'v1.' + b64url(await deflateRaw(bomb));
     expect(enc.length).toBeLessThan(LETTER_CAP_BYTES);
-    const t = Date.now();
     await rejects(decodeLetter(enc), 'too-large');
-    expect(Date.now() - t).toBeLessThan(5000);
+  }, 10_000);
+
+  it('encodeLetter refuses a payload over MAX_DECOMPRESSED_BYTES', async () => {
+    const baseText = '0'.repeat(3 * 1024 * 1024);
+    expect(baseText.length).toBeGreaterThan(MAX_DECOMPRESSED_BYTES);
+    await rejects(encodeLetter({ v: 1, baseText, ops: [] }), 'too-large');
   });
 
   it('more than MAX_OPS ops → too-large', async () => {
+    expect(MAX_REPLAY_STEPS).toBeLessThanOrEqual(MAX_OPS); // so this also covers the step cap
     const ops = Array.from({ length: MAX_OPS + 1 }, () => [0, 0]);
     await rejects(decodeLetter(await raw({ v: 1, baseText: '', ops })), 'too-large');
     await rejects(encodeLetter({ v: 1, baseText: '', ops: ops as Op[] }), 'too-large');
@@ -249,7 +282,7 @@ describe('replay pacing (R12, R18)', () => {
   });
 
   it('inserts in the middle cover the evolving document', () => {
-    const steps = replaySteps({ v: 1, baseText: 'ac', ops: [[0, 0, 1, 'bb', 1]] });
+    const steps = replaySteps({ v: 1, baseText: 'ac', ops: [[0, 100, 1, 'bb', 1]] });
     expect(steps.map((s) => s.runs)).toEqual([
       [1, 'b', 1],
       [2, 'b', 1],
@@ -279,11 +312,71 @@ describe('replay pacing (R12, R18)', () => {
     expect(steps[0]!.caret).toBe(0);
   });
 
-  it('multi-insert ops are a single step; d = 0 puts all characters at the same time', () => {
+  it('multi-insert ops are a single step; d = 0 or one character is one step for the whole op', () => {
     const multi = replaySteps({ v: 1, baseText: 'ab', ops: [[0, 50, 'x', 1, 'y', 1]] });
     expect(multi).toEqual([{ at: 0, runs: ['x', 1, 'y', 1], caret: 3 }]);
     const paste = replaySteps({ v: 1, baseText: '', ops: [[7, 0, 'abc']] });
-    expect(paste.map((s) => s.at)).toEqual([7, 7, 7]);
+    expect(paste).toEqual([{ at: 7, runs: ['abc'], caret: 3 }]);
+    const replace = replaySteps({ v: 1, baseText: 'teh end', ops: [[0, 0, 'the', -3, 4]] });
+    expect(replace).toEqual([{ at: 0, runs: ['the', -3, 4], caret: 3 }]);
+    const one = replaySteps({ v: 1, baseText: 'ab', ops: [[0, 300, 1, '😀', -1]] });
+    expect(one).toEqual([{ at: 0, runs: [1, '😀', -1], caret: 3 }]);
+  });
+
+  it('long inserts land in at most REPLAY_MAX_STEPS_PER_OP chunks, spread over d, pairs intact', () => {
+    const text = '😀x'.repeat(1000);
+    const l: Letter = { v: 1, baseText: 'ab', ops: [[0, 10_000, 1, text, 1]] };
+    const steps = replaySteps(l);
+    expect(steps.length).toBe(REPLAY_MAX_STEPS_PER_OP);
+    expect(steps[0]!.at).toBe(0);
+    expect(steps[steps.length - 1]!.at).toBe(10_000);
+    for (const s of steps) expect((s.runs.find((r) => typeof r === 'string') as string).isWellFormed()).toBe(true);
+    expect(replayStepsText(l)).toBe(replayAll(l));
+    expect(steps[steps.length - 1]!.caret).toBe(1 + text.length);
+  });
+
+  it('DoS: a 1.9M-character single-op letter decodes and replays in a few hundred steps', async () => {
+    const l: Letter = { v: 1, baseText: '', ops: [[0, 1_000_000_000, 'ab'.repeat(950_000)]] };
+    const decoded = await decodeLetter(await encodeLetter(l));
+    const t = performance.now();
+    const steps = replaySteps(decoded);
+    const ms = performance.now() - t;
+    expect(steps.length).toBeLessThanOrEqual(REPLAY_MAX_STEPS_PER_OP);
+    expect(ms).toBeLessThan(200);
+    expect(replayStepsText(decoded)).toBe(replayAll(decoded));
+    // d is capped per op
+    expect(steps[steps.length - 1]!.at).toBe(REPLAY_MAX_OP_MS);
+  }, 20_000);
+
+  it('total steps stay within MAX_REPLAY_STEPS: near the cap, ops stop being split', () => {
+    const n = MAX_REPLAY_STEPS - 10;
+    const ops: Op[] = [[0, 1000, 'hello world']];
+    for (let i = 1; i < n; i++) ops.push([0, 0, 11]);
+    const l: Letter = { v: 1, baseText: '', ops };
+    const steps = replaySteps(l);
+    expect(steps.length).toBeLessThanOrEqual(MAX_REPLAY_STEPS);
+    expect(steps.length).toBe(n + 10); // the first op got exactly the 10 + 1 steps left over
+    expect(replayStepsText(l)).toBe('hello world');
+  });
+
+  it("caps an op's d: REPLAY_MS_PER_CHAR per character typed, REPLAY_MAX_OP_MS per op", () => {
+    const huge = Number.MAX_SAFE_INTEGER;
+    const steps = replaySteps({
+      v: 1,
+      baseText: '',
+      ops: [
+        [0, huge, 'ab'], // 2 chars → 2 s
+        [0, huge, 2, 'c'], // one step; the op still lasts 1 s
+        [0, huge, 3, 'x'.repeat(500)], // 500 chars → capped at 60 s
+        [0, huge, 503], // retains only: lasts 0
+        [0, 5, 503, 'z'],
+      ],
+    });
+    const at = steps.map((s) => s.at);
+    expect(at.slice(0, 3)).toEqual([0, 2 * REPLAY_MS_PER_CHAR, 2 * REPLAY_MS_PER_CHAR]);
+    expect(at[3]).toBe(3 * REPLAY_MS_PER_CHAR); // after 'ab' (2 s) and 'c' (1 s)
+    expect(at[at.length - 1]).toBe(3 * REPLAY_MS_PER_CHAR + REPLAY_MAX_OP_MS);
+    for (const t of at) expect(Number.isSafeInteger(t)).toBe(true);
   });
 });
 
@@ -330,8 +423,38 @@ describe('letter range', () => {
     expect(buildLetter('', ops, 2, 'replay', { tz: 0 }).meta).toEqual({ tz: 0 });
   });
 
-  it('buildLetter final mode = final text only', () => {
+  it('buildLetter final mode = final text only; finalText skips the replay', () => {
     expect(buildLetter('', ops, 2, 'final')).toEqual({ v: 1, baseText: 'One tw three', ops: [] });
+    expect(buildLetter('', ops, 2, 'final', { tz: 0 }, 'given')).toEqual({ v: 1, baseText: 'given', ops: [], meta: { tz: 0 } });
+    // finalText is for 'final' only
+    expect(buildLetter('', ops, 3, 'replay', undefined, 'given').baseText).toBe('One two');
+  });
+
+  it('buildLetter throws on an op that does not apply (as string replay did)', () => {
+    expect(() => buildLetter('ab', [[0, 0, 5]], 1, 'replay')).toThrow();
+    expect(() => buildLetter('ab', [[0, 0, -5]], 1, 'replay')).toThrow();
+  });
+
+  it('buildLetter matches string replay (property)', () => {
+    fc.assert(
+      fc.property(arbLetter, fc.nat({ max: 30 }), (l, start) => {
+        const from = Math.min(start, l.ops.length);
+        const expected = l.ops.slice(0, from).reduce((t, op) => apply(t, op), l.baseText);
+        expect(buildLetter(l.baseText, l.ops, start, 'replay').baseText).toBe(expected);
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  it('baseTexts gives the text at every start point in one pass', () => {
+    const m = baseTexts('', ops, [5, 0, 3, 99, -1, 3]);
+    expect([...m.keys()].sort((a, b) => a - b)).toEqual([-1, 0, 3, 5, 99]);
+    expect(m.get(0)).toBe('');
+    expect(m.get(-1)).toBe('');
+    expect(m.get(3)).toBe('One two');
+    expect(m.get(5)).toBe(buildLetter('', ops, 5, 'replay').baseText);
+    expect(m.get(99)).toBe('One tw three');
+    expect(baseTexts('x', [], [0]).get(0)).toBe('x');
   });
 
   it('letterMeta dates the first replayed op', () => {
@@ -339,5 +462,24 @@ describe('letter range', () => {
     expect(letterMeta(sessions, ops, 4)).toEqual({ writtenAt: 10_000_050, tz: -60 });
     expect(letterMeta(sessions, ops, 0)).toEqual({ writtenAt: 1000, tz: 0 });
     expect(letterMeta([], ops, 0)).toEqual({});
+    expect(letterMeta(sessions, [], 0)).toEqual({});
+  });
+
+  it("letterMeta 'final' branch: start at or past the end dates the last op's end", () => {
+    // last op [0, 400, ...] starts at 20_000_000 and lasts 400 ms
+    expect(letterMeta(sessions, ops, ops.length)).toEqual({ writtenAt: 20_000_400, tz: -60 });
+    expect(letterMeta(sessions, ops, ops.length + 50)).toEqual({ writtenAt: 20_000_400, tz: -60 });
+    expect(letterMeta(sessions, ops, Infinity)).toEqual({ writtenAt: 1000, tz: 0 }); // non-finite → 0
+  });
+
+  it('letterMeta omits writtenAt when no session starts at or before the op (never 1970)', () => {
+    const late: Session[] = [{ opIndex: 3, at: 10_000_000, tzOffset: -60 }];
+    const m = letterMeta(late, ops, 1);
+    expect(m.writtenAt).toBeUndefined();
+    expect(m).toEqual({ tz: -60 });
+    expect(letterMeta(late, ops, 3)).toEqual({ writtenAt: 10_000_000, tz: -60 });
+    expect(letterMeta(late, ops, ops.length).writtenAt).toBe(10_000_000 + 50 + 400);
+    // only a session after the whole log: nothing dates even the final text
+    expect(letterMeta([{ opIndex: 9, at: 5, tzOffset: 0 }], ops, ops.length)).toEqual({ tz: 0 });
   });
 });

@@ -162,7 +162,7 @@ async function main() {
     `LINK_THRESHOLD_BYTES = ${LINK_THRESHOLD_BYTES} (${LINK_THRESHOLD_BYTES / 1024} KB), LETTER_CAP_BYTES = ${LETTER_CAP_BYTES}\n`,
   );
   await row(`replay from default start (op ${start})`, buildLetter('', ops, start, 'replay', letterMeta(sessions, ops, start)));
-  await row('final text only', buildLetter('', ops, start, 'final', letterMeta(sessions, ops, ops.length)));
+  await row('final text only', buildLetter('', ops, start, 'final', letterMeta(sessions, ops, ops.length), text));
   await row('replay whole draft (op 0)', buildLetter('', ops, 0, 'replay', letterMeta(sessions, ops, 0)));
   for (const s of sessions) {
     const end = sessions.find((x) => x.opIndex > s.opIndex)?.opIndex ?? ops.length;

@@ -8,10 +8,11 @@
  * after it. "Final text only" = { baseText: final, ops: [] }. Unknown keys inside meta are ignored;
  * unknown top-level keys are rejected. One shared cap (R13) for links and files.
  *
- * CONTRACT for v0.1 (implementations fill these in; signatures are fixed so core and UI can be
- * built in parallel).
+ * The v1 wire format (and the decoder's reading of it) is permanent: letters already sent are
+ * decoded with these semantics forever (see kop.golden.test.ts). So are the exported signatures.
  */
-import { apply, isValidOp, normalize, runsOf, targetLength, type Op, type Run } from './kop';
+import { Text } from '@codemirror/state';
+import { isValidOp, normalize, runsOf, targetLength, type Op, type Run } from './kop';
 import { opTimes, type Session } from './draft';
 
 /** encoded size cap, links and .kansoletter files alike (R13) */
@@ -21,8 +22,11 @@ export const LINK_THRESHOLD_BYTES = 8 * 1024;
 /** decoder limits (untrusted input) */
 export const MAX_DECOMPRESSED_BYTES = 2 * 1024 * 1024;
 export const MAX_OPS = 200_000;
+/** replaySteps never emits more steps than this; a letter with more ops is 'too-large' */
+export const MAX_REPLAY_STEPS = MAX_OPS;
 export const LETTER_PREFIX = 'v1.';
 export const LETTER_FILE_EXTENSION = '.kansoletter';
+export const LETTER_MIME = 'application/x-kansoletter';
 
 export interface LetterMeta {
   /** ms epoch of the replay's first op (shown as "A letter, written Oct 22") */
@@ -88,13 +92,7 @@ async function inflateCapped(bytes: Uint8Array, cap: number): Promise<Uint8Array
     }
     chunks.push(r.value);
   }
-  const out = new Uint8Array(total);
-  let o = 0;
-  for (const c of chunks) {
-    out.set(c, o);
-    o += c.byteLength;
-  }
-  return out;
+  return new Uint8Array(await new Blob(chunks as Uint8Array<ArrayBuffer>[]).arrayBuffer());
 }
 
 function toBase64Url(bytes: Uint8Array): string {
@@ -117,18 +115,30 @@ function fromBase64Url(s: string): Uint8Array {
   return out;
 }
 
+/** encodeLetter's padding attempts (~4% of prose-sized payloads end in '-' or '_' per try) */
+const PAD_TRIES = 64;
+
 /**
  * Letter → "v1.<base64url>". Throws LetterError('too-large') over LETTER_CAP_BYTES (or over the
  * decoder's MAX_OPS / MAX_DECOMPRESSED_BYTES). The letter is validated with the decoder's own
  * schema first, so we never send something a reader would refuse (an invalid letter throws
  * LetterError('damaged'), which means a bug on our side). Unknown meta keys are dropped.
+ *
+ * The link always ends in [A-Za-z0-9] (D3): chat apps and mail clients trim a trailing '-' or '_'
+ * off a URL. Spaces after the JSON's closing brace (which JSON.parse ignores) change the deflate
+ * output; we add one at a time until the last character is alphanumeric.
  */
 export async function encodeLetter(letter: Letter): Promise<string> {
   const payload = validateLetter({ ...letter });
-  const json = new TextEncoder().encode(JSON.stringify(payload));
-  if (json.byteLength > MAX_DECOMPRESSED_BYTES) throw new LetterError('too-large', 'payload too large');
-  const encoded = LETTER_PREFIX + toBase64Url(await deflate(json));
-  if (encoded.length > LETTER_CAP_BYTES) throw new LetterError('too-large', 'encoded letter over the cap');
+  const json = JSON.stringify(payload);
+  let encoded = '';
+  for (let pad = 0; pad < PAD_TRIES; pad++) {
+    const bytes = new TextEncoder().encode(json + ' '.repeat(pad));
+    if (bytes.byteLength > MAX_DECOMPRESSED_BYTES) throw new LetterError('too-large', 'payload too large');
+    encoded = LETTER_PREFIX + toBase64Url(await deflate(bytes));
+    if (encoded.length > LETTER_CAP_BYTES) throw new LetterError('too-large', 'encoded letter over the cap');
+    if (/[A-Za-z0-9]$/.test(encoded)) break;
+  }
   return encoded;
 }
 
@@ -173,7 +183,7 @@ export function validateLetter(data: unknown): Letter {
   // the editor normalizes line breaks to \n, so text with \r would desync replay from the log
   if (typeof baseText !== 'string' || baseText.includes('\r')) throw damaged('bad baseText');
   if (!Array.isArray(ops)) throw damaged('ops is not an array');
-  if (ops.length > MAX_OPS) throw new LetterError('too-large', 'too many ops');
+  if (ops.length > MAX_OPS || ops.length > MAX_REPLAY_STEPS) throw new LetterError('too-large', 'too many ops');
   // length-only tracking: linear, no string building
   let len = baseText.length;
   for (const op of ops as unknown[]) {
@@ -205,18 +215,66 @@ export function validateLetter(data: unknown): Letter {
 
 const clampStart = (start: number, n: number) => (Number.isFinite(start) ? Math.min(n, Math.max(0, Math.floor(start))) : 0);
 
+const textOf = (s: string) => Text.of(s.split('\n'));
+
+/** One op on a rope, O(runs × log n). Throws when its runs don't cover the document (as kop.apply). */
+function applyRope(doc: Text, op: Op): Text {
+  let pos = 0;
+  for (const r of runsOf(op)) {
+    if (typeof r === 'string') {
+      doc = doc.replace(pos, pos, textOf(r));
+      pos += r.length;
+    } else if (r > 0) pos += r;
+    else if (pos - r > doc.length) pos = Infinity;
+    else doc = doc.replace(pos, pos - r, Text.empty);
+    if (pos > doc.length) break;
+  }
+  if (pos !== doc.length) throw new Error('KOP op does not cover the document');
+  return doc;
+}
+
 /**
  * Build a letter from a draft's history: base = text at op 0 (the draft's base snapshot, '' if
- * none), all ops, and the op index where replay starts. mode 'final' = final text only.
- * `start` is clamped into [0, ops.length].
+ * none), all ops, and the op index where replay starts. mode 'final' = final text only; pass
+ * `finalText` (the draft's current text) to skip replaying the history for it.
+ * `start` is clamped into [0, ops.length]. Throws when an op doesn't apply.
  */
-export function buildLetter(base: string, ops: Op[], start: number, mode: 'replay' | 'final', meta?: LetterMeta): Letter {
+export function buildLetter(
+  base: string,
+  ops: Op[],
+  start: number,
+  mode: 'replay' | 'final',
+  meta?: LetterMeta,
+  finalText?: string,
+): Letter {
   const from = mode === 'final' ? ops.length : clampStart(start, ops.length);
-  let text = base;
-  for (let i = 0; i < from; i++) text = apply(text, ops[i]!);
-  const letter: Letter = { v: 1, baseText: text, ops: ops.slice(from) };
+  let baseText: string;
+  if (mode === 'final' && finalText !== undefined) baseText = finalText;
+  else {
+    let doc = textOf(base);
+    for (let i = 0; i < from; i++) doc = applyRope(doc, ops[i]!);
+    baseText = doc.toString();
+  }
+  const letter: Letter = { v: 1, baseText, ops: ops.slice(from) };
   if (meta !== undefined) letter.meta = { ...meta };
   return letter;
+}
+
+/**
+ * The text at each start point (op index, clamped into [0, ops.length]) in one forward pass, so
+ * the send panel can move its slider without replaying the history each time. Keyed by the
+ * points as given. Throws when an op doesn't apply.
+ */
+export function baseTexts(base: string, ops: Op[], points: number[]): Map<number, string> {
+  const out = new Map<number, string>();
+  const order = [...new Set(points)].map((p) => [p, clampStart(p, ops.length)] as const).sort((a, b) => a[1] - b[1]);
+  let doc = textOf(base);
+  let i = 0;
+  for (const [p, at] of order) {
+    for (; i < at; i++) doc = applyRope(doc, ops[i]!);
+    out.set(p, doc.toString());
+  }
+  return out;
 }
 
 /** Default replay start (R16): the opIndex of the last session that contains ops; 0 if none. */
@@ -236,18 +294,20 @@ export function startPoints(sessions: Session[], opCount: number): number[] {
 /**
  * Meta for a letter whose replay starts at `start` in the full log: writtenAt = absolute start
  * time of ops[start] (or the last op's end when nothing replays), tz = that op's session offset.
- * Returns {} when the log has no sessions/ops to date it.
+ * Returns {} when the log has no sessions/ops to date it. writtenAt is left out when no session
+ * starts at or before that op (opTimes would count it from clock 0, dating the letter to 1970).
  */
 export function letterMeta(sessions: Session[], ops: Op[], start: number): LetterMeta {
   if (!ops.length || !sessions.length) return {};
   const times = opTimes(sessions, ops);
   const i = clampStart(start, ops.length);
-  const writtenAt = i < ops.length ? times[i]! : times[ops.length - 1]! + ops[ops.length - 1]![1];
   const idx = Math.min(i, ops.length - 1);
+  const dated = sessions.some((s) => s.opIndex <= idx);
+  const writtenAt = i < ops.length ? times[i]! : times[ops.length - 1]! + ops[ops.length - 1]![1];
   let tz = sessions[0]!.tzOffset;
   for (const s of sessions) if (s.opIndex <= idx) tz = s.tzOffset;
   const meta: LetterMeta = {};
-  if (Number.isFinite(writtenAt)) meta.writtenAt = writtenAt;
+  if (dated && Number.isFinite(writtenAt)) meta.writtenAt = writtenAt;
   if (Number.isFinite(tz)) meta.tz = tz;
   return meta;
 }
@@ -258,42 +318,99 @@ export function letterMeta(sessions: Session[], ops: Op[], start: number): Lette
 /** dt over this is a thinking pause, replayed as REPLAY_PAUSE_CAP_MS (R12) */
 export const REPLAY_PAUSE_OVER_MS = 4000;
 export const REPLAY_PAUSE_CAP_MS = 1500;
-
 /**
- * Replay pacing (R12, R18). `at` is ms from replay start. Each step's `runs` cover the document
- * as it stands after all earlier steps (apply them in order, starting from baseText), so a
- * reader can feed them to CodeMirror incrementally (never a full-text copy per step). Pauses
- * (dt) over 4 s are capped at 1.5 s; a merged op's inserted characters are spread evenly across
- * its d, one step per character (a surrogate pair is never split); other ops are one step.
- *
- * Time model: an op starts `pause(dt)` after the previous op ended and lasts `d`. For an op with
- * exactly one insert, its deletes (if any) are one step at the op's start, then character i of k
- * lands at start + d·i/(k−1) (so the first at the start, the last at the end, matching how the
- * merged word was recorded; all at the start when d = 0 or k = 1). `at` is rounded to whole ms.
+ * An op's `d` is untrusted: the reader honours at most this much per character typed (the
+ * writer's merge window, so real recordings are never cut) and REPLAY_MAX_OP_MS per op. With
+ * dt ≤ 4 s and MAX_REPLAY_STEPS ops, the clock stays far inside safe integers.
  */
+export const REPLAY_MS_PER_CHAR = 1000;
+export const REPLAY_MAX_OP_MS = 60_000;
+/** a merged op's insert is spread over at most this many steps (longer ones land in chunks) */
+export const REPLAY_MAX_STEPS_PER_OP = 256;
+
+/** One replay step: `runs` applied at `at` ms from replay start, then the caret sits at `caret`. */
 export interface ReplayStep {
   at: number;
   runs: Run[];
   /** caret position (UTF-16) after the step */
   caret: number;
 }
+
+/**
+ * UTF-16 end offsets of the pieces `text` is typed in: one per code point, or at most `max`
+ * evenly sized chunks when it has more (a surrogate pair is never split).
+ */
+function pieceEnds(text: string, max: number): number[] {
+  const ends: number[] = [];
+  if (text.length <= 2 * max) {
+    let o = 0;
+    for (const ch of text) ends.push((o += ch.length));
+    if (ends.length <= max) return ends;
+    ends.length = 0;
+  }
+  const n = Math.max(1, max);
+  for (let j = 1; j <= n; j++) {
+    let e = Math.round((j * text.length) / n);
+    const c = text.charCodeAt(e - 1);
+    if (e < text.length && c >= 0xd800 && c <= 0xdbff) e++; // keep the pair together
+    if (e > (ends[ends.length - 1] ?? 0)) ends.push(e);
+  }
+  return ends;
+}
+
+/**
+ * Replay pacing (R12, R18). `at` is ms from replay start. Each step's `runs` cover the document
+ * as it stands after all earlier steps (apply them in order, starting from baseText), so a
+ * reader can feed them to CodeMirror incrementally (never a full-text copy per step).
+ *
+ * Time model: an op starts `pause(dt)` after the previous op ended (pauses over 4 s are capped at
+ * 1.5 s) and lasts `d` (capped: REPLAY_MS_PER_CHAR per character typed, REPLAY_MAX_OP_MS per op).
+ * An op with several inserts, or none, is one step. For an op with exactly one insert, its
+ * deletes (if any) are one step at the op's start, then piece i of k (a code point, or a chunk
+ * when the insert has more than REPLAY_MAX_STEPS_PER_OP of them) lands at start + d·i/(k−1): the
+ * first at the start, the last at the end, matching how the merged word was recorded. When d = 0
+ * or there's one piece, the whole insert is one step. `at` is rounded to whole ms.
+ *
+ * Bounded for untrusted letters: never more than max(MAX_REPLAY_STEPS, ops.length) steps (and
+ * decodeLetter refuses more ops than that); near the cap, ops stop being split.
+ */
 export function replaySteps(letter: Letter): ReplayStep[] {
   const steps: ReplayStep[] = [];
+  const { ops } = letter;
   let len = letter.baseText.length;
   let clock = 0;
   let caret = len;
-  for (const op of letter.ops) {
-    const [dt, d] = op;
+  for (let oi = 0; oi < ops.length; oi++) {
+    const op = ops[oi]!;
+    const [dt] = op;
     clock += dt > REPLAY_PAUSE_OVER_MS ? REPLAY_PAUSE_CAP_MS : dt;
     const runs = runsOf(op);
     let inserts = 0;
+    let typed = 0;
     let deletes = false;
     for (const r of runs) {
-      if (typeof r === 'string') inserts++;
-      else if (r < 0) deletes = true;
+      if (typeof r === 'string') {
+        inserts++;
+        typed += r.length;
+      } else if (r < 0) {
+        deletes = true;
+        typed -= r;
+      }
     }
-    if (inserts !== 1) {
-      // one step for the whole op; caret after its last insert, else at its last delete
+    const d = Math.min(op[1], REPLAY_MS_PER_CHAR * typed, REPLAY_MAX_OP_MS);
+    // steps this op may use and still leave one for every later op
+    const budget = Math.min(REPLAY_MAX_STEPS_PER_OP + 1, MAX_REPLAY_STEPS - steps.length - (ops.length - oi - 1));
+    let text = '';
+    let at = 0; // insert position after the op's deletes
+    if (inserts === 1)
+      for (const r of runs) {
+        if (typeof r === 'string') text = r;
+        else if (r > 0 && !text) at += r;
+      }
+    const onePiece = text.length === 1 || (text.length === 2 && text.codePointAt(0)! > 0xffff);
+    if (inserts !== 1 || budget < 2 || d === 0 || onePiece) {
+      // one step for the whole op (its pieces would all share one `at` anyway); caret after its
+      // last insert, else at its last delete
       let pos = 0;
       let c = -1;
       for (const r of runs) {
@@ -307,36 +424,27 @@ export function replaySteps(letter: Letter): ReplayStep[] {
       clock += d;
       continue;
     }
-    // single insert: split into (deletes) + one step per code point
-    let text = '';
-    let at = 0; // insert position after the op's deletes
-    for (const r of runs) {
-      if (typeof r === 'string') text = r;
-      else if (r > 0 && !text) at += r;
-    }
+    // single insert: (deletes) + its pieces spread over d
     if (deletes) {
       const rest = normalize(runs.filter((r) => typeof r !== 'string'));
       len = targetLength(rest);
       steps.push({ at: Math.round(clock), runs: rest, caret: at });
     }
-    const chars = Array.from(text);
-    const k = chars.length;
+    const ends = pieceEnds(text, Math.min(REPLAY_MAX_STEPS_PER_OP, budget - (deletes ? 1 : 0)));
+    const k = ends.length;
+    let from = 0;
     for (let i = 0; i < k; i++) {
-      const ch = chars[i]!;
+      const piece = text.slice(from, ends[i]);
+      from = ends[i]!;
       const tail = len - at;
-      const stepRuns: Run[] = at > 0 ? [at, ch] : [ch];
+      const stepRuns: Run[] = at > 0 ? [at, piece] : [piece];
       if (tail > 0) stepRuns.push(tail);
-      at += ch.length;
-      len += ch.length;
+      at += piece.length;
+      len += piece.length;
       steps.push({ at: Math.round(k > 1 ? clock + (d * i) / (k - 1) : clock), runs: stepRuns, caret: at });
     }
     caret = at;
     clock += d;
   }
   return steps;
-}
-
-/** Apply bare runs (no timing) to text; throws when they don't cover it (see kop.apply). */
-export function applyRuns(text: string, runs: Run[]): string {
-  return apply(text, [0, 0, ...runs]);
 }

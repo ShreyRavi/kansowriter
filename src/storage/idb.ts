@@ -3,15 +3,19 @@ import { Text } from '@codemirror/state';
 import { runsOf, type Op } from '../core/kop';
 import { deriveMeta, newEpoch, SNAPSHOT_EVERY, type DraftMeta, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
-import type { AppendBatch, AppendResult, BackupData, ImportResult, LoadedDraft, StorageAdapter } from '../core/storage';
+import type { AppendBatch, AppendResult, BackupData, ImportResult, LetterSource, LoadedDraft, StorageAdapter } from '../core/storage';
 
 /**
  * Replay on a rope: each op costs O(runs × log n) instead of copying the whole string, so a
  * novel-length history loads and imports in seconds (string replay is ops × length). Stops at the
- * first op that doesn't apply and returns the text so far with ok: false (ok: true when all applied).
- * `onSnapshot` gets op indexes counted from the start of `ops`.
+ * first op that doesn't apply and returns the text so far with ok: false (ok: true when all applied);
+ * `applied` counts the ops that did. `onSnapshot` gets op indexes counted from the start of `ops`.
  */
-function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text: Text) => void): { doc: Text; ok: boolean } {
+function replayRope(
+  base: string,
+  ops: Op[],
+  onSnapshot?: (opIndex: number, text: Text) => void,
+): { doc: Text; ok: boolean; applied: number } {
   let doc = Text.of(base.split('\n'));
   for (let i = 0; i < ops.length; i++) {
     let next = doc;
@@ -29,11 +33,11 @@ function replayRope(base: string, ops: Op[], onSnapshot?: (opIndex: number, text
         break;
       }
     }
-    if (!ok || pos !== next.length) return { doc, ok: false };
+    if (!ok || pos !== next.length) return { doc, ok: false, applied: i };
     doc = next;
     if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot?.(i + 1, doc);
   }
-  return { doc, ok: true };
+  return { doc, ok: true, applied: ops.length };
 }
 
 /**
@@ -103,6 +107,21 @@ export class IndexedDbAdapter implements StorageAdapter {
       // A bad op must not make the whole draft unreadable: keep the last state that applied.
       const { doc, ok } = replayRope(snap?.text ?? '', ops);
       return ok ? { record, text: doc.toString() } : { record, text: doc.toString(), damaged: true };
+    });
+  }
+
+  async loadLetterSource(id: string): Promise<LetterSource | null> {
+    return this.db.transaction('r', this.db.drafts, this.db.ops, this.db.snapshots, async () => {
+      const record = await this.db.drafts.get(id);
+      if (!record) return null;
+      const [baseRow, rows] = await Promise.all([
+        this.db.snapshots.get([id, 0]),
+        this.db.ops.where('[draftId+seq]').between([id, 0], [id, record.head], true, false).toArray(),
+      ]);
+      const base = baseRow?.text ?? '';
+      const ops = rows.map((r) => r.op);
+      const { doc, ok, applied } = replayRope(base, ops);
+      return { record, base, ops: ok ? ops : ops.slice(0, applied), text: doc.toString(), damaged: !ok };
     });
   }
 

@@ -39,6 +39,7 @@ type:
   titlePhone: 28px
   landing: 30px
   wordmark: 17px
+  openFile: 17px
   lineSerif: "1.7"
   lineSans: "1.65"
   lineMono: "1.6"
@@ -65,6 +66,7 @@ motion:
   goalSettle: 600ms
   feedback: 2000ms
   endLinkDelay: 1500ms
+  endLinkFade: 400ms
 ---
 
 # Kansowriter design system
@@ -87,7 +89,7 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 | Palette row | 44px min, 4px radius, label left, value + key chip right; in-row editing; inline destructive confirm |
 | Sidebar row | title 17px Newsreader 500, when 12px, 2-line excerpt 13px, words 12px; selected row background |
 | Search field | 40px, magnifier icon, clear ✕ when filled, hidden label |
-| Reader | 680px column, hidden controls row (play/pause, scrubber, Skip to the end), date line top-left, 2px replay line, end-state link 48px below the text after 1.5 s |
+| Reader | 680px column, hidden controls row (play/pause, scrubber, Skip to the end), date line top-left, 2px replay line, end-state link 48px below the text after 1.5 s (`endLinkFade`, none under reduced motion); empty state: "Open a letter file" 17px Newsreader (`openFile`) with a drop zone; reduced motion keeps the replay (static caret, no animated chrome) |
 | Send panel | 620px bottom panel 24px above the edge (phone: sheet, `rounded.sheet` top corners, max 60vh), live preview above, Replay / Final text only, start slider, size note, privacy line, primary Copy link / Download letter file |
 
 ## Browser surfaces

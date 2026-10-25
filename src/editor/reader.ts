@@ -83,17 +83,7 @@ export function runsToChanges(runs: Run[]): ChangeSpec[] {
   return out;
 }
 
-function applyToText(doc: Text, runs: Run[]): Text {
-  let pos = 0; // in the document being built
-  for (const r of runs) {
-    if (typeof r === 'string') {
-      doc = doc.replace(pos, pos, Text.of(r.split('\n')));
-      pos += r.length;
-    } else if (r > 0) pos += r;
-    else doc = doc.replace(pos, pos - r, Text.empty);
-  }
-  return doc;
-}
+const applyToText = (doc: Text, runs: Run[]): Text => ChangeSet.of(runsToChanges(runs), doc.length, '\n').apply(doc);
 
 export interface PlayerState {
   /** replay time, ms */
@@ -231,11 +221,15 @@ export class ReplayPlayer {
     this.onState({ t: this.clock, duration: this.duration, playing: false, done: this.finished });
   }
 
-  /** Jump to replay time t: forward continues from here, backward rebuilds from baseText. */
+  /**
+   * Jump to replay time t: forward continues from here; backward rebuilds from baseText, but only
+   * when a step past t was already applied (so a drag's run of backward seeks restarts the
+   * rebuild only when it overshoots, and otherwise just retargets it).
+   */
   seek(t: number) {
     const target = Math.max(0, Math.min(this.duration, t));
     if (this.finished && target >= this.duration) return;
-    if (target < this.now() || this.finished) {
+    if (this.finished || (this.index > 0 && this.steps[this.index - 1]!.at > target)) {
       this.unfinish();
       this.index = 0;
       this.caret = this.base.length;

@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
+  baseTexts,
   buildLetter,
   defaultStart,
   encodeLetter,
-  LETTER_CAP_BYTES,
   LETTER_FILE_EXTENSION,
+  LETTER_MIME,
   LetterError,
   letterMeta,
   LINK_THRESHOLD_BYTES,
@@ -17,20 +18,32 @@ import { useStore } from './store';
 import { useDialog } from './useDialog';
 import { CloseIcon } from './icons';
 import { CopyLink } from './CopyLink';
-import { prefersReducedMotion, Replay } from './Replay';
+import { Replay } from './Replay';
+import { letterLink } from './letterLinks';
 import { download, safeFileName } from './platform';
 
 interface Source {
   record: DraftRecord;
   base: string;
   ops: Op[];
-  final: string;
+  /** the draft's text as storage has it (the last state that applied, when damaged) */
+  text: string;
+  /** part of the history didn't apply: ops stop at the last one that did */
+  damaged: boolean;
+  /** start points the slider snaps to, and the text at each (computed once per open) */
+  points: number[];
+  texts: Map<number, string>;
 }
 
-type Encoded = { status: 'working' } | { status: 'ok'; encoded: string } | { status: 'too-large' } | { status: 'error' };
+type Mode = 'replay' | 'final';
+/** which inputs a letter was made from: a result for other inputs is never sent */
+const keyOf = (mode: Mode, start: number) => (mode === 'final' ? 'final' : `replay:${start}`);
+
+type Settled = { key: string } & ({ status: 'ok'; encoded: string } | { status: 'too-large' } | { status: 'error' });
 
 const kb = (bytes: number) => `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
 const FEEDBACK_MS = 2000; // motion.feedback
+const SETTLE_MS = 120;
 
 /** Where a start point sits in time, for the slider's value text. */
 function startLabel(rec: DraftRecord, start: number): string {
@@ -41,96 +54,139 @@ function startLabel(rec: DraftRecord, start: number): string {
     : 'the beginning';
 }
 
+function makeLetter(src: Source, mode: Mode, start: number): Letter {
+  // dated by the replay's first op (or, for final text, when the writing ended)
+  const meta = letterMeta(src.record.sessions, src.ops, mode === 'final' ? src.ops.length : start);
+  const m = Object.keys(meta).length ? meta : undefined;
+  // final text is the saved text itself: nothing is replayed to get it
+  if (mode === 'final') return buildLetter(src.base, src.ops, src.ops.length, 'final', m, src.text);
+  const at = src.texts.get(start);
+  return at === undefined ? buildLetter(src.base, src.ops, start, 'replay', m) : buildLetter(at, src.ops.slice(start), 0, 'replay', m);
+}
+
 /**
  * Send preview (2A): a live reader preview that restarts on every range or mode change, the
  * mode toggle, a "start replay from" slider snapping to sessions, the size note, the privacy
  * line (R25) and one primary button: Copy link, or Download letter file over the link size.
  * The editor has already flushed its writer; this only reads storage (read-only tabs can send).
+ * `unsaved`: the editor still holds words storage doesn't (a stale tab, or a save that failed).
  */
-export function SendPanel({ draftId, title, onClose }: { draftId: string; title: string; onClose(): void }) {
+export function SendPanel({
+  draftId,
+  title,
+  unsaved = false,
+  onClose,
+}: {
+  draftId: string;
+  title: string;
+  unsaved?: boolean;
+  onClose(): void;
+}) {
   const { storage } = useStore();
   const ref = useRef<HTMLDivElement>(null);
-  const [source, setSource] = useState<Source | null | 'error'>(null);
-  const [mode, setMode] = useState<'replay' | 'final'>('replay');
+  const [source, setSource] = useState<Source | 'loading' | 'error'>('loading');
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const [mode, setMode] = useState<Mode>('replay');
   const [start, setStart] = useState(0);
-  const [encoded, setEncoded] = useState<Encoded>({ status: 'working' });
+  /** the letter for the settled inputs, tagged with them */
+  const [letter, setLetter] = useState<{ key: string; letter: Letter } | null>(null);
+  /** the last encode that finished (possibly for earlier inputs: shown, never sent) */
+  const [settled, setSettled] = useState<Settled | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [saved, setSaved] = useState<string | null>(null);
+  const savedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useDialog(ref, onClose);
+  useEffect(() => () => void (savedTimer.current && clearTimeout(savedTimer.current)), []);
 
   useEffect(() => {
     let alive = true;
     void (async () => {
-      const [loaded, ops, snaps] = await Promise.all([
-        storage.loadDraft(draftId),
-        storage.loadOps(draftId),
-        storage.loadSnapshots(draftId),
-      ]);
+      // one read transaction: record, base, ops and text all from the same moment
+      const src = await storage.loadLetterSource(draftId);
       if (!alive) return;
-      if (!loaded) return setSource('error');
-      const base = snaps.find((s) => s.opIndex === 0)?.text ?? '';
-      setStart(defaultStart(loaded.record.sessions, ops.length));
-      setSource({ record: loaded.record, base, ops, final: loaded.text });
+      if (!src) return setSource('error');
+      const points = startPoints(src.record.sessions, src.ops.length);
+      const texts = baseTexts(src.base, src.ops, points);
+      setStart(defaultStart(src.record.sessions, src.ops.length));
+      setSource({ ...src, damaged: !!src.damaged, points, texts });
     })().catch(() => alive && setSource('error'));
     return () => {
       alive = false;
     };
-  }, [storage, draftId]);
+  }, [storage, draftId, loadAttempt]);
 
-  const points = useMemo(() => (source && source !== 'error' ? startPoints(source.record.sessions, source.ops.length) : [0]), [source]);
-  const empty = !!source && source !== 'error' && !source.final.trim();
+  const ready = typeof source === 'object';
+  const empty = ready && !source.text.trim();
+  const key = keyOf(mode, start);
 
   // the letter as it stands, settled for a moment so dragging the slider doesn't restart on every tick
-  const [letter, setLetter] = useState<Letter | null>(null);
   useEffect(() => {
-    if (!source || source === 'error' || empty) return;
+    if (typeof source !== 'object' || empty) return;
     const t = setTimeout(() => {
       try {
-        // dated by the replay's first op (or, for final text, when the writing ended)
-        const meta = letterMeta(source.record.sessions, source.ops, mode === 'final' ? source.ops.length : start);
-        setLetter(buildLetter(source.base, source.ops, start, mode, Object.keys(meta).length ? meta : undefined));
+        setLetter({ key, letter: makeLetter(source, mode, start) });
       } catch {
-        setSource('error');
+        setLetter(null);
+        setSettled({ key, status: 'error' });
       }
-    }, 120);
+    }, SETTLE_MS);
     return () => clearTimeout(t);
-  }, [source, start, mode, empty]);
+  }, [source, empty, mode, start, key, attempt]);
 
   useEffect(() => {
     if (!letter) return;
     let alive = true;
-    setEncoded({ status: 'working' });
-    encodeLetter(letter).then(
-      (e) => alive && setEncoded(e.length > LETTER_CAP_BYTES ? { status: 'too-large' } : { status: 'ok', encoded: e }),
-      (e) => alive && setEncoded(e instanceof LetterError && e.kind === 'too-large' ? { status: 'too-large' } : { status: 'error' }),
+    const { key: k } = letter;
+    encodeLetter(letter.letter).then(
+      (encoded) => alive && setSettled({ key: k, status: 'ok', encoded }),
+      (e) => alive && setSettled({ key: k, status: e instanceof LetterError && e.kind === 'too-large' ? 'too-large' : 'error' }),
     );
     return () => {
       alive = false;
     };
   }, [letter]);
 
+  /** the encoded letter for exactly what is chosen now, or null while it is being made */
+  const current = settled && settled.key === key && letter?.key === key ? settled : null;
+  const sendable = current?.status === 'ok' ? current.encoded : null;
+  // the last settled result keeps the label and size steady while a new one is made (no flicker)
+  const shownOk = settled?.status === 'ok' ? settled.encoded : null;
+  const asLink = settled ? shownOk !== null && shownOk.length <= LINK_THRESHOLD_BYTES : true;
+
   const fileName = `${safeFileName(title)}${LETTER_FILE_EXTENSION}`;
-  const asLink = encoded.status === 'ok' && encoded.encoded.length <= LINK_THRESHOLD_BYTES;
-  const link = encoded.status === 'ok' ? `${location.origin}/l#${encoded.encoded}` : '';
+  const points = ready ? source.points : [0];
   const at = Math.max(0, points.indexOf(start));
 
   const sizeNote =
-    encoded.status === 'ok'
-      ? asLink
-        ? `Fits in a link · ${kb(encoded.encoded.length)}`
-        : `Too long for a link · ${kb(encoded.encoded.length)} file`
-      : encoded.status === 'too-large'
-        ? mode === 'replay'
-          ? 'Too long to send. Start the replay later, or choose Final text only.'
-          : 'Too long to send, even as final text.'
-        : encoded.status === 'error'
-          ? 'Couldn’t prepare this letter. Try again'
-          : ' ';
+    shownOk !== null
+      ? shownOk.length <= LINK_THRESHOLD_BYTES
+        ? `Fits in a link · ${kb(shownOk.length)}`
+        : `Too long for a link · ${kb(shownOk.length)} file`
+      : settled?.status === 'too-large'
+        ? settled.key === 'final'
+          ? 'Too long to send, even as final text.'
+          : 'Too long to send. Start the replay later, or choose Final text only.'
+        : settled?.status === 'error'
+          ? 'Couldn’t prepare this letter.'
+          : ' ';
 
   const saveFile = () => {
-    if (encoded.status !== 'ok') return;
-    download(fileName, encoded.encoded, 'application/x-kansoletter');
+    if (sendable === null) return;
+    download(fileName, sendable, LETTER_MIME);
     setSaved(`Saved ${fileName}`);
-    setTimeout(() => setSaved(null), FEEDBACK_MS);
+    if (savedTimer.current) clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSaved(null), FEEDBACK_MS);
+  };
+
+  const retryEncode = () => {
+    setSettled(null);
+    setAttempt((n) => n + 1);
+  };
+  const retryLoad = () => {
+    setSource('loading');
+    setLetter(null);
+    setSettled(null);
+    setLoadAttempt((n) => n + 1);
   };
 
   return (
@@ -141,18 +197,33 @@ export function SendPanel({ draftId, title, onClose }: { draftId: string; title:
           <CloseIcon />
         </button>
       </div>
-      <div className="send-preview">
-        {letter && !empty && <Replay letter={letter} instant={prefersReducedMotion()} controls={false} label="Letter preview" />}
-      </div>
+      <div className="send-preview">{letter && !empty && <Replay letter={letter.letter} controls={false} label="Letter preview" />}</div>
       <div className="send-panel ui">
-        {source === 'error' ? (
-          <p className="send-note" role="alert">
-            Couldn’t read this draft’s history. Try again
-          </p>
+        {source === 'loading' ? (
+          <div className="send-loading" aria-busy="true" />
+        ) : source === 'error' ? (
+          <div className="send-row">
+            <p className="send-note" role="alert">
+              Couldn’t read this draft.
+            </p>
+            <button type="button" className="text-btn" onClick={retryLoad}>
+              Try again
+            </button>
+          </div>
         ) : empty ? (
           <p className="send-note">Nothing to send yet. Write something first.</p>
         ) : (
           <>
+            {unsaved && (
+              <p className="send-note send-warn" role="status">
+                Your newest words aren’t saved yet, so they aren’t in this letter.
+              </p>
+            )}
+            {source.damaged && (
+              <p className="send-note send-warn" role="status">
+                Part of this draft’s history couldn’t be read, so the replay ends where it breaks. Final text only sends the text as saved.
+              </p>
+            )}
             <fieldset className="send-mode">
               <legend className="sr-only">What the letter shows</legend>
               <label>
@@ -164,7 +235,7 @@ export function SendPanel({ draftId, title, onClose }: { draftId: string; title:
                 Final text only
               </label>
             </fieldset>
-            {mode === 'replay' && points.length > 1 && source && (
+            {mode === 'replay' && points.length > 1 && (
               <label className="send-range">
                 <span>Start replay from</span>
                 <input
@@ -189,10 +260,19 @@ export function SendPanel({ draftId, title, onClose }: { draftId: string; title:
               <span className="send-size" aria-live="polite">
                 {sizeNote}
               </span>
-              {asLink ? (
-                <CopyLink link={link} className="primary-btn" />
+              {current?.status === 'error' && (
+                <button type="button" className="text-btn" onClick={retryEncode}>
+                  Try again
+                </button>
+              )}
+              {asLink && sendable !== null ? (
+                <CopyLink link={letterLink(sendable)} className="primary-btn" />
+              ) : asLink ? (
+                <button type="button" className="primary-btn" disabled>
+                  Copy link
+                </button>
               ) : (
-                <button type="button" className="primary-btn" disabled={encoded.status !== 'ok'} onClick={saveFile}>
+                <button type="button" className="primary-btn" disabled={sendable === null} onClick={saveFile}>
                   {saved ?? 'Download letter file'}
                 </button>
               )}

@@ -13,6 +13,7 @@
   --type-title-phone: 28px;
   --type-landing: 30px;
   --type-wordmark: 17px;
+  --type-open-file: 17px;
   --type-line-serif: 1.7;
   --type-line-sans: 1.65;
   --type-line-mono: 1.6;
@@ -36,6 +37,7 @@
   --motion-goal-settle: 600ms;
   --motion-feedback: 2000ms;
   --motion-end-link-delay: 1500ms;
+  --motion-end-link-fade: 400ms;
   --c-ground: #F5F0E6;
   --c-surface: #FBF8F1;
   --c-ink: #272320;

@@ -575,7 +575,9 @@ main.boot .unsaved-text {
 }
 .sidebar nav {
   flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
   padding: 4px 8px;
@@ -726,8 +728,21 @@ main.boot .unsaved-text {
   font-size: 16px;
   outline: none;
 }
+.palette-wrap {
+  overscroll-behavior: contain;
+}
+/* the list is the palette's one scroll container, bounded by the palette (desktop) or the sheet (phone) */
+.palette [cmdk-root] {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
 .palette [cmdk-list] {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 8px;
 }
 .palette [cmdk-group-heading] {
@@ -883,14 +898,10 @@ main.boot .unsaved-text {
   margin-top: calc(var(--space-end-link) - 14px);
   color: var(--c-muted);
   opacity: 0;
-  animation: fade-in 400ms ease-out var(--motion-end-link-delay) forwards;
+  animation: fade-in var(--motion-end-link-fade) ease-out var(--motion-end-link-delay) forwards;
 }
 .reader-end:hover {
   color: var(--c-ink);
-}
-.reader-end.now {
-  opacity: 1;
-  animation: none;
 }
 .reader .replay-progress {
   position: fixed;
@@ -952,7 +963,7 @@ main.boot .unsaved-text {
   align-items: center;
   min-height: var(--space-target);
   padding: 0 4px;
-  font-size: 17px;
+  font-size: var(--type-open-file);
   color: var(--c-ink);
   border: 0;
   border-bottom: 1px solid var(--c-ink);
@@ -1002,6 +1013,7 @@ main.boot .unsaved-text {
 .send-wrap {
   position: fixed;
   inset: 0;
+  overscroll-behavior: contain;
   z-index: 40;
   display: flex;
   flex-direction: column;
@@ -1024,6 +1036,7 @@ main.boot .unsaved-text {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
 }
@@ -1106,6 +1119,15 @@ main.boot .unsaved-text {
 .send-note {
   margin: 8px 0;
 }
+.send-warn {
+  margin: 4px 0;
+  color: var(--c-ink);
+  line-height: 1.5;
+}
+.send-loading {
+  /* the panel's settled height (mode row, size row, privacy line), so nothing jumps when it fills */
+  min-height: calc(3 * var(--space-target));
+}
 .send-privacy {
   margin: 4px 0 0;
   color: var(--c-muted);
@@ -1119,7 +1141,7 @@ main.boot .unsaved-text {
   background: var(--c-ink);
   color: var(--c-ground);
   font-family: var(--type-sans);
-  font-size: 14px;
+  font-size: var(--type-row);
   font-weight: 500;
   cursor: pointer;
 }
@@ -1232,6 +1254,7 @@ main.boot .unsaved-text {
     max-height: 60vh;
     max-height: 60dvh;
     overflow-y: auto;
+    overscroll-behavior: contain;
     margin: 0;
     padding: 8px var(--space-gutter) calc(16px + env(safe-area-inset-bottom));
     border-width: 1px 0 0;

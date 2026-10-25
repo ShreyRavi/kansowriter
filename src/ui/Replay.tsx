@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { EditorView } from '@codemirror/view';
 import { replaySteps, type Letter, type LetterMeta } from '../core/letter';
 import { createReaderView, ReplayPlayer, type PlayerState } from '../editor/reader';
@@ -15,25 +15,24 @@ export function writtenLine(meta: LetterMeta | undefined, now = Date.now()): str
   return `A letter, written ${d.toLocaleDateString(undefined, opts)}`;
 }
 
-export const prefersReducedMotion = () => typeof matchMedia !== 'undefined' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-
 const clock = (ms: number) => {
   const s = Math.round(ms / 1000);
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
 const IDLE_MS = 3000; // motion.chromeFadeDelay
+/** React hears about the clock at most this often (the replay line itself moves every frame) */
+const STATE_EVERY_MS = 100;
 
 interface Props {
   letter: Letter;
-  /** prefers-reduced-motion (or a static preview): final text at once, no caret, no controls */
-  instant: boolean;
   /** the reader's quiet controls (1A); the send preview has none */
   controls: boolean;
   /** "Letter" in the reader, "Letter preview" in the send panel */
   label: string;
   className?: string;
-  onDone?(): void;
+  /** true when the replay reaches its end; false again when it restarts or seeks back */
+  onEnded?(ended: boolean): void;
   /** below the text: the reader's end-state link */
   children?: ReactNode;
 }
@@ -41,39 +40,55 @@ interface Props {
 /**
  * One letter replaying (1A): date line, the letter column, the 2px replay line, and (reader
  * only) a controls row that stays hidden until the reader moves, touches or presses a key.
+ *
+ * The send preview and the reader replay the same way, reduced motion or not (17A: reduced
+ * motion means a caret that never blinks and chrome that doesn't animate, never a different
+ * letter). A letter with nothing to replay (final text only) shows its end state at once.
  */
-export function Replay({ letter, instant, controls, label, className = '', onDone, children }: Props) {
+export function Replay({ letter, controls, label, className = '', onEnded, children }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<ReplayPlayer | null>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
-  const [state, setState] = useState<PlayerState>({ t: 0, duration: 0, playing: !instant, done: false });
+  const progressRef = useRef<HTMLDivElement>(null);
+  const [state, setState] = useState<PlayerState>({ t: 0, duration: 0, playing: true, done: false });
   const [shown, setShown] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const onDoneRef = useRef(onDone);
-  onDoneRef.current = onDone;
-  const doneRef = useRef(false);
+  const onEndedRef = useRef(onEnded);
+  onEndedRef.current = onEnded;
 
   useEffect(() => {
     const host = hostRef.current!;
-    doneRef.current = false;
-    setState({ t: 0, duration: 0, playing: !instant, done: false });
-    let view: EditorView;
+    let view: EditorView | null = null;
     let player: ReplayPlayer;
+    let ended = false;
+    let last: PlayerState | null = null;
+    let lastAt = 0;
+    const report = (s: PlayerState) => {
+      // the replay line follows every frame without a React render
+      const bar = progressRef.current;
+      if (bar) bar.style.width = `${s.duration ? (s.t / s.duration) * 100 : s.done ? 100 : 0}%`;
+      const now = performance.now();
+      if (!last || s.done !== last.done || s.playing !== last.playing || s.duration !== last.duration || now - lastAt >= STATE_EVERY_MS) {
+        last = s;
+        lastAt = now;
+        setState(s);
+      }
+      if (s.done !== ended) {
+        ended = s.done;
+        onEndedRef.current?.(ended);
+      }
+    };
     try {
       view = createReaderView(host, letter.baseText, label);
-      player = new ReplayPlayer(view, letter.baseText, replaySteps(letter), (s) => {
-        setState(s);
-        if (s.done && !doneRef.current) {
-          doneRef.current = true;
-          onDoneRef.current?.();
-        }
-      });
+      player = new ReplayPlayer(view, letter.baseText, replaySteps(letter), report);
     } catch {
-      return; // decodeLetter validated the letter; nothing sensible to show otherwise
+      // decodeLetter validated the letter; nothing sensible to show otherwise
+      view?.destroy();
+      return;
     }
     playerRef.current = player;
-    if (instant) player.skipToEnd();
-    else player.play();
+    report({ t: 0, duration: player.duration, playing: true, done: false });
+    player.play();
     // a hidden tab doesn't watch: hold the replay there and pick it up on return
     let heldByHide = false;
     const onVis = () => {
@@ -89,10 +104,10 @@ export function Replay({ letter, instant, controls, label, className = '', onDon
     return () => {
       document.removeEventListener('visibilitychange', onVis);
       player.destroy();
-      view.destroy();
+      view?.destroy();
       playerRef.current = null;
     };
-  }, [letter, instant, label]);
+  }, [letter, label]);
 
   // ---------- quiet controls ----------
   const reveal = useCallback(() => {
@@ -107,13 +122,12 @@ export function Replay({ letter, instant, controls, label, className = '', onDon
     const p = playerRef.current;
     if (!p) return;
     if (p.isPlaying()) p.pause();
-    else {
-      doneRef.current = false;
-      p.play();
-    }
+    else p.play();
   }, []);
+  /** nothing to replay (final text only): no Play, no scrubber */
+  const still = state.done && state.duration === 0;
   useEffect(() => {
-    if (!controls || instant) return;
+    if (!controls || still) return;
     let last: { x: number; y: number } | null = null;
     const onMove = (e: PointerEvent) => {
       if (last && (Math.abs(e.clientX - last.x) > 2 || Math.abs(e.clientY - last.y) > 2)) reveal();
@@ -136,21 +150,19 @@ export function Replay({ letter, instant, controls, label, className = '', onDon
       window.removeEventListener('pointerdown', reveal);
       window.removeEventListener('keydown', onKey);
     };
-  }, [controls, instant, reveal, toggle]);
+  }, [controls, still, reveal, toggle]);
   useEffect(() => () => void (hideTimer.current && clearTimeout(hideTimer.current)), []);
 
-  const date = writtenLine(letter.meta);
-  const pct = state.duration ? (state.t / state.duration) * 100 : state.done ? 100 : 0;
-  const ended = state.done || (instant && state.duration === 0);
+  const date = useMemo(() => writtenLine(letter.meta), [letter.meta]);
 
   return (
-    <div className={`replay${ended ? ' ended' : ''} ${className}`}>
+    <div className={`replay${state.done ? ' ended' : ''} ${className}`}>
       {date && <p className="replay-date ui">{date}</p>}
       <div className="replay-page">
         <div ref={hostRef} className="replay-column" />
         {children}
       </div>
-      {controls && !instant && (
+      {controls && !still && (
         <div ref={controlsRef} className={`replay-controls ui chrome${shown ? '' : ' hidden'}`} onFocus={reveal}>
           <button type="button" className="text-btn" onClick={toggle}>
             {state.playing ? 'Pause' : state.done ? 'Replay' : 'Play'}
@@ -164,10 +176,7 @@ export function Replay({ letter, instant, controls, label, className = '', onDon
             step={100}
             value={Math.round(state.t)}
             aria-valuetext={`${clock(state.t)} of ${clock(state.duration)}`}
-            onChange={(e) => {
-              doneRef.current = false;
-              playerRef.current?.seek(Number(e.target.value));
-            }}
+            onChange={(e) => playerRef.current?.seek(Number(e.target.value))}
           />
           <button type="button" className="text-btn" disabled={state.done} onClick={() => playerRef.current?.skipToEnd()}>
             Skip to the end
@@ -175,7 +184,7 @@ export function Replay({ letter, instant, controls, label, className = '', onDon
         </div>
       )}
       <div className="progress replay-progress" aria-hidden="true">
-        <div style={{ width: `${pct}%` }} />
+        <div ref={progressRef} />
       </div>
     </div>
   );

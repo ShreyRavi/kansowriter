@@ -15,7 +15,7 @@ import { exportAll, importBackup } from './backupActions';
 import { applyUpdate, useUpdateReady } from './updates';
 import { EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
 import { setUnsavedProvider } from './unsaved';
-import { SendPanel } from './SendPanel';
+import { useScrollLock } from './scrollLock';
 
 /** typing pause before the update notice may first appear while the chrome is faded */
 const UPDATE_IDLE_MS = 3000;
@@ -29,6 +29,14 @@ const CommandPalette = lazy(() =>
     .catch(() => loadPalette())
     .then((m) => ({ default: m.CommandPalette })),
 );
+// Send as letter is its own chunk too: fetched when the envelope is hovered or Send starts
+const loadSend = () => import('./SendPanel');
+const SendPanel = lazy(() =>
+  loadSend()
+    .catch(() => loadSend())
+    .then((m) => ({ default: m.SendPanel })),
+);
+const preloadSend = () => void loadSend().catch(() => {});
 
 /**
  * Catches the palette failing (its chunk won't load, or it throws) so the error never reaches the
@@ -86,7 +94,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sidebar, setSidebar] = useState(false);
   const [palette, setPalette] = useState(false);
-  const [send, setSend] = useState(false);
+  /** the open send panel: `unsaved` when the page holds words storage doesn't (the letter can't carry them) */
+  const [send, setSend] = useState<{ unsaved: boolean } | null>(null);
+  /** Send was opened from the text (shortcut, palette): Close returns to the text, not the opener */
+  const sendRefocusRef = useRef(false);
+  // the draft behind an overlay never scrolls (typewriter and the editor's own scroll are untouched otherwise)
+  useScrollLock(palette || sidebar || !!send);
   const [mountKey, setMountKey] = useState(0);
   /** the update notice, latched: it first appears only while the writer isn't mid-sentence, then stays */
   const [showUpdate, setShowUpdate] = useState(false);
@@ -385,20 +398,32 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   }, [update]);
 
   /** Send as letter (3A): save the word being typed first, so the letter ends where the page does */
-  const openSend = useCallback(async () => {
+  const openSend = useCallback(async (from: 'button' | 'text') => {
     setPalette(false);
     setSidebar(false);
+    preloadSend();
     try {
       await writerRef.current?.flush(true);
     } catch {
-      // a failed save keeps its notice; the letter carries what storage has
+      // a failed save keeps its notice; the letter carries what storage has (and says so)
     }
-    setSend(true);
+    // anything opened while the flush ran gives way to the send panel
+    setPalette(false);
+    setSidebar(false);
+    sendRefocusRef.current = from === 'text';
+    setSend({ unsaved: staleRef.current || !!writerRef.current?.dirty });
+  }, []);
+  const closeSend = useCallback(() => {
+    const refocus = sendRefocusRef.current;
+    sendRefocusRef.current = false;
+    setSend(null);
+    // useDialog hands focus back to the opener; Send opened from the text goes back to the text
+    if (refocus) requestAnimationFrame(() => viewRef.current?.focus());
   }, []);
 
   const actions: PaletteActions = useMemo(
     () => ({
-      sendLetter: () => void openSend(),
+      sendLetter: () => void openSend('text'),
       newDraft: () => {
         setPalette(false);
         void leaveRef.current(() => onNew());
@@ -561,12 +586,20 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac() ? e.metaKey : e.ctrlKey;
       const k = e.key.toLowerCase();
+      if (send) {
+        // the send panel is modal: only its own shortcut (and Esc, which useDialog takes) apply
+        if (mod && e.shiftKey && k === 'l') {
+          e.preventDefault();
+          closeSend();
+        }
+        return;
+      }
       if (mod && !e.shiftKey && k === 'k') {
         e.preventDefault();
         setPalette((p) => !p);
       } else if (mod && e.shiftKey && k === 'l') {
         e.preventDefault();
-        if (!send) void openSend();
+        void openSend('text');
       } else if (mod && e.shiftKey && k === 'n') {
         e.preventDefault();
         toggleTheme();
@@ -588,7 +621,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [palette, sidebar, send, reveal, toggleTheme, exportText, update, openSend]);
+  }, [palette, sidebar, send, reveal, toggleTheme, exportText, update, openSend, closeSend]);
 
   // ---------- render ----------
   const goal = settings.goal;
@@ -636,7 +669,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           >
             {night ? <SunIcon /> : <MoonIcon />}
           </button>
-          <button type="button" className="icon-btn hide-phone" aria-label="Send as letter" onClick={() => void openSend()}>
+          <button
+            type="button"
+            className="icon-btn hide-phone"
+            aria-label="Send as letter"
+            onPointerEnter={preloadSend}
+            onFocus={preloadSend}
+            onClick={() => void openSend('button')}
+          >
             <EnvelopeIcon />
           </button>
           <button
@@ -781,15 +821,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         />
       )}
       {send && (
-        <SendPanel
-          draftId={draftId}
-          title={title}
-          onClose={() => {
-            setSend(false);
-            // back to the text, after the dialog has handed focus back to where it was
-            requestAnimationFrame(() => viewRef.current?.focus());
-          }}
-        />
+        <PaletteBoundary onError={closeSend}>
+          <Suspense fallback={null}>
+            <SendPanel draftId={draftId} title={title} unsaved={send.unsaved} onClose={closeSend} />
+          </Suspense>
+        </PaletteBoundary>
       )}
       {palette && (
         <PaletteBoundary

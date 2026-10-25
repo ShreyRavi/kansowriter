@@ -26,6 +26,19 @@ export interface LoadedDraft {
   damaged?: boolean;
 }
 
+/** A draft's whole history, read at once for a letter (one consistent read). */
+export interface LetterSource {
+  record: DraftRecord;
+  /** text at op 0: the base snapshot, '' without one */
+  base: string;
+  /** ops 0..record.head; when damaged, only those that apply */
+  ops: Op[];
+  /** the draft's text, as loadDraft shows it */
+  text: string;
+  /** an op failed to replay; ops stop before it and text is the last state that applied */
+  damaged: boolean;
+}
+
 export interface BackupDraft {
   record: DraftRecord;
   ops: Op[];
@@ -45,6 +58,8 @@ export interface StorageAdapter {
   listDrafts(): Promise<DraftRecord[]>;
   createDraft(record: DraftRecord): Promise<void>;
   loadDraft(id: string): Promise<LoadedDraft | null>;
+  /** record, base snapshot and ops up to head in one read transaction (null when the draft is gone) */
+  loadLetterSource(id: string): Promise<LetterSource | null>;
   /** the draft's record alone (no replay): a cheap check that a loaded draft is still current */
   getRecord(id: string): Promise<DraftRecord | undefined>;
   loadOps(id: string, from?: number): Promise<Op[]>;
