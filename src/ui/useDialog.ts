@@ -4,9 +4,14 @@ const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]), [tabi
 
 /**
  * Dialog behavior (17A): focus moves inside, Tab is trapped, Esc closes, and focus returns
- * to where it was when the dialog closes.
+ * to where it was when the dialog closes (unless `restore` is false: the owner returns it).
  */
-export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => void, initial?: RefObject<HTMLElement | null>) {
+export function useDialog(
+  ref: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  initial?: RefObject<HTMLElement | null>,
+  restore = true,
+) {
   useEffect(() => {
     const previous = document.activeElement as HTMLElement | null;
     (initial?.current ?? ref.current?.querySelector<HTMLElement>(FOCUSABLE))?.focus();
@@ -37,7 +42,7 @@ export function useDialog(ref: RefObject<HTMLElement | null>, onClose: () => voi
     document.addEventListener('keydown', onKey, true);
     return () => {
       document.removeEventListener('keydown', onKey, true);
-      if (previous && document.contains(previous)) previous.focus();
+      if (restore && previous && document.contains(previous)) previous.focus();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -35,7 +35,7 @@ export interface LetterSource {
   ops: Op[];
   /** the draft's text, as loadDraft shows it */
   text: string;
-  /** an op failed to replay; ops stop before it and text is the last state that applied */
+  /** an op failed to replay: ops stop before it (text stays loadDraft's, from the latest snapshot) */
   damaged: boolean;
 }
 

@@ -446,15 +446,19 @@ describe('letter range', () => {
     );
   });
 
-  it('baseTexts gives the text at every start point in one pass', () => {
+  it('baseTexts gives the text at every start point in one pass, as ropes buildLetter takes', () => {
     const m = baseTexts('', ops, [5, 0, 3, 99, -1, 3]);
     expect([...m.keys()].sort((a, b) => a - b)).toEqual([-1, 0, 3, 5, 99]);
-    expect(m.get(0)).toBe('');
-    expect(m.get(-1)).toBe('');
-    expect(m.get(3)).toBe('One two');
-    expect(m.get(5)).toBe(buildLetter('', ops, 5, 'replay').baseText);
-    expect(m.get(99)).toBe('One tw three');
-    expect(baseTexts('x', [], [0]).get(0)).toBe('x');
+    const at = (p: number) => m.get(p)!.toString();
+    expect(at(0)).toBe('');
+    expect(at(-1)).toBe('');
+    expect(at(3)).toBe('One two');
+    expect(at(5)).toBe(buildLetter('', ops, 5, 'replay').baseText);
+    expect(at(99)).toBe('One tw three');
+    expect(baseTexts('x', [], [0]).get(0)!.toString()).toBe('x');
+    // a rope base gives the same letter as the string it stands for
+    expect(buildLetter(m.get(3)!, ops.slice(3), 0, 'replay')).toEqual(buildLetter('', ops, 3, 'replay'));
+    expect(buildLetter(m.get(3)!, ops.slice(3), 1, 'replay')).toEqual(buildLetter('', ops, 4, 'replay'));
   });
 
   it('letterMeta dates the first replayed op', () => {

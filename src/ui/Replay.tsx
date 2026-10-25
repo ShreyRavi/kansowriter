@@ -63,15 +63,35 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
     let ended = false;
     let last: PlayerState | null = null;
     let lastAt = 0;
+    let trailing: ReturnType<typeof setTimeout> | null = null;
+    let pending: PlayerState | null = null;
+    const flush = (s: PlayerState) => {
+      if (trailing) clearTimeout(trailing);
+      trailing = null;
+      pending = null;
+      last = s;
+      lastAt = performance.now();
+      setState(s);
+    };
     const report = (s: PlayerState) => {
       // the replay line follows every frame without a React render
       const bar = progressRef.current;
       if (bar) bar.style.width = `${s.duration ? (s.t / s.duration) * 100 : s.done ? 100 : 0}%`;
       const now = performance.now();
-      if (!last || s.done !== last.done || s.playing !== last.playing || s.duration !== last.duration || now - lastAt >= STATE_EVERY_MS) {
-        last = s;
-        lastAt = now;
-        setState(s);
+      // paused, every report lands (the scrubber and its value text follow each seek); playing,
+      // at most one per STATE_EVERY_MS, with a trailing one so the newest state is never dropped
+      if (
+        !s.playing ||
+        !last ||
+        s.done !== last.done ||
+        s.playing !== last.playing ||
+        s.duration !== last.duration ||
+        now - lastAt >= STATE_EVERY_MS
+      ) {
+        flush(s);
+      } else {
+        pending = s;
+        trailing ??= setTimeout(() => pending && flush(pending), STATE_EVERY_MS - (now - lastAt));
       }
       if (s.done !== ended) {
         ended = s.done;
@@ -103,6 +123,7 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
     document.addEventListener('visibilitychange', onVis);
     return () => {
       document.removeEventListener('visibilitychange', onVis);
+      if (trailing) clearTimeout(trailing);
       player.destroy();
       view?.destroy();
       playerRef.current = null;

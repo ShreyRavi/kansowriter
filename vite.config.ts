@@ -21,8 +21,10 @@ export default defineConfig({
         navigateFallback: '/index.html',
         // A letter link must open the reader of the app as deployed now, not whatever shell this
         // device cached: /l never takes the precached fallback; it goes to the network first and
-        // falls back to its own cached copy offline (once it has been fetched).
-        navigateFallbackDenylist: [/^\/l\/?$/],
+        // falls back to its own cached copy offline (once it has been fetched), then to the
+        // precached shell. Workbox tests the denylist against pathname + search, so /l?fbclid=…
+        // (a link that went through a chat app) is a letter navigation too.
+        navigateFallbackDenylist: [/^\/l\/?(\?|$)/],
         runtimeCaching: [
           {
             urlPattern: ({ request, url }) => request.mode === 'navigate' && /^\/l\/?$/.test(url.pathname),
@@ -33,6 +35,15 @@ export default defineConfig({
               expiration: { maxEntries: 2 },
               // the fragment (the letter) is never sent; only the shell is cached
               matchOptions: { ignoreSearch: true },
+              plugins: [
+                {
+                  // offline before /l was ever fetched (or an installed app opening a .kansoletter):
+                  // the precached shell routes /l to the reader, which needs nothing else. Serialized
+                  // into sw.js, so self-contained (no closures); the precache key carries a
+                  // __WB_REVISION__ query, hence ignoreSearch.
+                  handlerDidError: async () => (await caches.match('/index.html', { ignoreSearch: true })) ?? Response.error(),
+                },
+              ],
             },
           },
         ],

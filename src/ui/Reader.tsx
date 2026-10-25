@@ -85,7 +85,19 @@ export function Reader() {
     // an installed app opened with a .kansoletter file (manifest file_handlers)
     window.launchQueue?.setConsumer((params) => {
       const handle = params.files?.[0];
-      if (handle) void handle.getFile().then(openFile, () => setView({ name: 'damaged' }));
+      if (!handle) return;
+      // the same guard as every open: a link opened while the file is fetched wins over it
+      const mine = ++seq.current;
+      void handle.getFile().then(
+        (file) => {
+          if (mine === seq.current) void openFile(file);
+        },
+        () => {
+          if (mine !== seq.current) return;
+          setEnded(false);
+          setView({ name: 'damaged' });
+        },
+      );
     });
     return () => window.removeEventListener('hashchange', fromHash);
   }, [open, openFile]);

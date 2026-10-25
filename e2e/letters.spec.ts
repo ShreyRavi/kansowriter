@@ -178,6 +178,26 @@ test.describe('letters (v0.1)', () => {
     await expect(page.getByRole('textbox', { name: 'Letter' })).not.toHaveText(SLOW_TEXT);
   });
 
+  test('paused, the scrubber and its value text follow every quick seek', async ({ page }) => {
+    await page.goto(`/l#${await slowLetter()}`);
+    await revealControls(page);
+    await page.getByRole('button', { name: 'Pause' }).click();
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+    const scrubber = page.getByRole('slider', { name: 'Replay position' });
+    const max = Number(await scrubber.getAttribute('max'));
+    // a drag: seeks closer together than the playing throttle (100 ms), each set the way the browser
+    // sets it (Playwright's fill() goes around React's value tracker, so React never hears it)
+    for (const v of ['9000', '4000', '12000', '12400'])
+      await scrubber.evaluate((el: HTMLInputElement, value) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }, v);
+    const clock = (ms: number) => `${Math.floor(Math.round(ms / 1000) / 60)}:${String(Math.round(ms / 1000) % 60).padStart(2, '0')}`;
+    await expect(scrubber).toHaveValue('12400');
+    await expect(scrubber).toHaveAttribute('aria-valuetext', `${clock(12_400)} of ${clock(max)}`);
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+  });
+
   test('under reduced motion the reader still replays, with a caret that never blinks (17A)', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`/l#${await slowLetter()}`);
@@ -344,6 +364,33 @@ test.describe('letters (v0.1)', () => {
     await expect(page.getByRole('textbox', { name: 'Letter' })).toHaveText('A second letter.');
   });
 
+  test('a launched file that fails to read never replaces a letter opened since', async ({ page }) => {
+    // an installed app's launchQueue (R1), stood in for: the test holds the file read open
+    await page.addInitScript(() => {
+      const w = window as unknown as { launch?: (p: unknown) => void };
+      // Chromium has its own (read-only) launchQueue
+      Object.defineProperty(window, 'launchQueue', {
+        configurable: true,
+        value: { setConsumer: (c: (p: unknown) => void) => (w.launch = c) },
+      });
+    });
+    await page.goto('/l');
+    await expect(page.getByRole('button', { name: 'Open a letter file' })).toBeVisible();
+    await page.evaluate(() => {
+      const w = window as unknown as { launch: (p: unknown) => void; failFile?: () => void };
+      w.launch({ files: [{ getFile: () => new Promise((_, reject) => (w.failFile = () => reject(new Error('gone')))) }] });
+    });
+    const encoded = await encodeTestLetter({ v: 1, baseText: 'Opened from a link.', ops: [] });
+    await page.evaluate((hash) => (location.hash = hash), encoded);
+    const letter = page.getByRole('textbox', { name: 'Letter' });
+    await expect(letter).toHaveText('Opened from a link.');
+    await page.evaluate(() => (window as unknown as { failFile: () => void }).failFile());
+    // a failed read settles after the link: give it a turn to (wrongly) take over
+    await page.evaluate(() => new Promise((r) => setTimeout(r, 100)));
+    await expect(page.getByRole('alert')).toHaveCount(0);
+    await expect(letter).toHaveText('Opened from a link.');
+  });
+
   test('"/l/" with a trailing slash opens the reader', async ({ page }) => {
     const encoded = await encodeTestLetter({ v: 1, baseText: 'Trailing slash.', ops: [] });
     await page.goto(`/l/#${encoded}`);
@@ -470,9 +517,33 @@ test.describe('letters (v0.1)', () => {
   test('the service worker never answers a letter navigation with the cached shell', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'reads the generated sw.js once; the rule is the same file for every browser');
     const sw = await (await page.request.get('/sw.js')).text();
-    // workbox's NavigationRoute denylist (the /l pattern) and a NetworkFirst route for /l navigations
-    expect(sw).toMatch(/denylist:\s*\[\s*\/\^\\\/l\\\/\?\$\//);
+    // workbox's NavigationRoute denylist (the /l pattern), tested as workbox does: pathname + search
+    const deny = /denylist:\s*\[\s*\/(.+?)\/\s*\]/.exec(sw)?.[1];
+    expect(deny).toBeDefined();
+    const denied = new RegExp(deny!);
+    for (const url of ['/l', '/l/', '/l?fbclid=x', '/l/?utm_source=chat']) expect(denied.test(url), url).toBe(true);
+    for (const url of ['/', '/about', '/letters', '/l2', '/l/x']) expect(denied.test(url), url).toBe(false);
+    // and a NetworkFirst route for /l navigations, falling back to the precached shell
     expect(sw).toContain('NetworkFirst');
     expect(sw).toContain('letter-reader');
+    expect(sw).toMatch(/handlerDidError:async\(\)=>[^]*?caches\.match\("\/index\.html",\{ignoreSearch:!0\}/);
+  });
+
+  test('offline, a letter opened for the first time still reaches the reader', async ({ page, context, browserName }) => {
+    test.skip(browserName !== 'chromium', 'one engine is enough for the worker rule; Playwright’s offline mode reaches Chromium’s worker');
+    await page.goto('/about');
+    // installed and active: the precache (with the shell) is complete
+    await page.evaluate(() => navigator.serviceWorker.ready);
+    await context.setOffline(true);
+    try {
+      // /l was never fetched in this context, so the letter-reader cache is empty
+      const encoded = await encodeTestLetter({ v: 1, baseText: 'Read on a plane.', ops: [] });
+      for (const path of [`/l#${encoded}`, `/l?fbclid=x#${encoded}`]) {
+        await page.goto(path);
+        await expect(page.getByRole('textbox', { name: 'Letter' })).toHaveText('Read on a plane.');
+      }
+    } finally {
+      await context.setOffline(false);
+    }
   });
 });

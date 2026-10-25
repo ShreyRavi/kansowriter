@@ -395,6 +395,24 @@ describe('DraftWriter + IndexedDbAdapter', () => {
     expect(replay(null, src.ops)).toBe('good');
   });
 
+  it('loadLetterSource text matches loadDraft when a newer snapshot carries past a bad op; ops stop at it', async () => {
+    const { w } = await makeWriter();
+    for (let i = 0; i < 502; i++) {
+      const len = w.currentText.length;
+      w.push({ runs: len ? [len, 'x'] : ['x'], at: T0 + i, kind: 'other' });
+    }
+    await w.flush(true, T0 + 10_000);
+    // op 10 goes bad after the fact; the snapshot at 500 still holds the true text
+    await db.db.ops.put({ draftId: 'd1', seq: 10, op: [0, 0, 999, 'x'] });
+    const loaded = (await db.loadDraft('d1'))!;
+    expect(loaded.text).toBe('x'.repeat(502));
+    const src = (await db.loadLetterSource('d1'))!;
+    expect(src.text).toBe(loaded.text);
+    expect(src.damaged).toBe(true);
+    expect(src.ops).toHaveLength(10);
+    expect(replay(null, src.ops)).toBe('x'.repeat(10));
+  });
+
   it('DamagedDraftError carries the head and epoch the readable text came from; a repair after a change is refused', async () => {
     const { w } = await makeWriter();
     typeWord(w, 'good', T0);

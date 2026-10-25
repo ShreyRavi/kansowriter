@@ -235,12 +235,12 @@ function applyRope(doc: Text, op: Op): Text {
 
 /**
  * Build a letter from a draft's history: base = text at op 0 (the draft's base snapshot, '' if
- * none), all ops, and the op index where replay starts. mode 'final' = final text only; pass
- * `finalText` (the draft's current text) to skip replaying the history for it.
- * `start` is clamped into [0, ops.length]. Throws when an op doesn't apply.
+ * none; a string or a rope from baseTexts), all ops, and the op index where replay starts.
+ * mode 'final' = final text only; pass `finalText` (the draft's current text) to skip replaying
+ * the history for it. `start` is clamped into [0, ops.length]. Throws when an op doesn't apply.
  */
 export function buildLetter(
-  base: string,
+  base: string | Text,
   ops: Op[],
   start: number,
   mode: 'replay' | 'final',
@@ -251,7 +251,7 @@ export function buildLetter(
   let baseText: string;
   if (mode === 'final' && finalText !== undefined) baseText = finalText;
   else {
-    let doc = textOf(base);
+    let doc = typeof base === 'string' ? textOf(base) : base;
     for (let i = 0; i < from; i++) doc = applyRope(doc, ops[i]!);
     baseText = doc.toString();
   }
@@ -263,16 +263,18 @@ export function buildLetter(
 /**
  * The text at each start point (op index, clamped into [0, ops.length]) in one forward pass, so
  * the send panel can move its slider without replaying the history each time. Keyed by the
- * points as given. Throws when an op doesn't apply.
+ * points as given. Each is a rope sharing structure with the others (a full string per session
+ * would be sessions × length); pass the chosen one to buildLetter, which flattens only that one.
+ * Throws when an op doesn't apply.
  */
-export function baseTexts(base: string, ops: Op[], points: number[]): Map<number, string> {
-  const out = new Map<number, string>();
+export function baseTexts(base: string, ops: Op[], points: number[]): Map<number, Text> {
+  const out = new Map<number, Text>();
   const order = [...new Set(points)].map((p) => [p, clampStart(p, ops.length)] as const).sort((a, b) => a[1] - b[1]);
   let doc = textOf(base);
   let i = 0;
   for (const [p, at] of order) {
     for (; i < at; i++) doc = applyRope(doc, ops[i]!);
-    out.set(p, doc.toString());
+    out.set(p, doc);
   }
   return out;
 }

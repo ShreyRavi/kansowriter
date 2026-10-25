@@ -120,8 +120,12 @@ export class IndexedDbAdapter implements StorageAdapter {
       ]);
       const base = baseRow?.text ?? '';
       const ops = rows.map((r) => r.op);
-      const { doc, ok, applied } = replayRope(base, ops);
-      return { record, base, ops: ok ? ops : ops.slice(0, applied), text: doc.toString(), damaged: !ok };
+      // the replay stops at the first bad op; the text is what loadDraft shows (latest snapshot +
+      // the ops after it), which a newer snapshot can carry past a break in the older history
+      const { ok, applied } = replayRope(base, ops);
+      const snap = await this.latestSnapshot(id, record.head);
+      const tail = replayRope(snap?.text ?? '', ops.slice(snap?.opIndex ?? 0));
+      return { record, base, ops: ok ? ops : ops.slice(0, applied), text: tail.doc.toString(), damaged: !ok || !tail.ok };
     });
   }
 

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { Text } from '@codemirror/state';
 import {
   baseTexts,
   buildLetter,
@@ -30,9 +31,9 @@ interface Source {
   text: string;
   /** part of the history didn't apply: ops stop at the last one that did */
   damaged: boolean;
-  /** start points the slider snaps to, and the text at each (computed once per open) */
+  /** start points the slider snaps to, and the text at each (computed once per open, as shared ropes) */
   points: number[];
-  texts: Map<number, string>;
+  texts: Map<number, Text>;
 }
 
 type Mode = 'replay' | 'final';
