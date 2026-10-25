@@ -1,0 +1,62 @@
+/* Generated from DESIGN.md by scripts/gen-tokens.ts. Do not edit. */
+:root {
+  --type-writing: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --type-sans: 'Instrument Sans', system-ui, sans-serif;
+  --type-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --type-ui: 13px;
+  --type-row: 14px;
+  --type-ui-small: 12px;
+  --type-key: 11px;
+  --type-body: 21px;
+  --type-body-phone: 19px;
+  --type-title: 34px;
+  --type-title-phone: 28px;
+  --type-landing: 30px;
+  --type-wordmark: 17px;
+  --type-line-serif: 1.7;
+  --type-line-sans: 1.65;
+  --type-line-mono: 1.6;
+  --rounded-key: 3px;
+  --rounded-row: 4px;
+  --rounded-panel: 6px;
+  --rounded-sheet: 16px;
+  --space-page-top: 160px;
+  --space-page-bottom: 120px;
+  --space-gutter: 24px;
+  --space-paragraph: 28px;
+  --space-paragraph-phone: 22px;
+  --space-measure: 680px;
+  --space-sidebar: 340px;
+  --space-palette: 620px;
+  --space-target: 44px;
+  --motion-chrome-fade-delay: 3000ms;
+  --motion-chrome-fade: 200ms;
+  --motion-goal-settle: 600ms;
+  --motion-feedback: 2000ms;
+  --c-ground: #F5F0E6;
+  --c-surface: #FBF8F1;
+  --c-ink: #272320;
+  --c-muted: #6E655B;
+  --c-hairline: #E3DACB;
+  --c-track: #E9E2D4;
+  --c-selected: #EFE9DC;
+  --c-accent: #5E6E3A;
+  --c-accent-hover: #48562C;
+  --c-selection: #5E6E3A38;
+  --c-shadow: rgba(39, 35, 32, 0.35);
+  color-scheme: light;
+}
+:root[data-theme='night'] {
+  --c-ground: #1B1917;
+  --c-surface: #23201D;
+  --c-ink: #E8E1D5;
+  --c-muted: #A39A8E;
+  --c-hairline: #2E2A26;
+  --c-track: #2E2A26;
+  --c-selected: #2A2622;
+  --c-accent: #B5BF86;
+  --c-accent-hover: #CBD4A2;
+  --c-selection: #B5BF8647;
+  --c-shadow: rgba(0, 0, 0, 0.55);
+  color-scheme: dark;
+}

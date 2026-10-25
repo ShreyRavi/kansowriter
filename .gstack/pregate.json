@@ -1,0 +1,17 @@
+{
+  "strays": { "allow": ["index.html", "vercel.json"] },
+  "dependencies": {
+    "src/ui/**": ["e2e/app.spec.ts", "e2e/palette.regression-1.spec.ts"],
+    "src/main.tsx": ["e2e/app.spec.ts"],
+    "index.html": ["e2e/app.spec.ts"],
+    "vite.config.ts": ["e2e/app.spec.ts"],
+    "playwright.config.ts": ["e2e/app.spec.ts"],
+    "vercel.json": [],
+    "scripts/**": [],
+    ".github/workflows/ci.yml": [],
+    "eslint.config.js": [],
+    "tsconfig.json": [],
+    "package.json": [],
+    "package-lock.json": []
+  }
+}

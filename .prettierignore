@@ -1,0 +1,14 @@
+dist/
+coverage/
+test-results/
+playwright-report/
+package-lock.json
+public/
+src/ui/tokens.css
+.gstack/
+docs/
+*.md
+# the inline theme script is pinned by its sha256 in vercel.json (scripts/check-csp.ts)
+index.html
+# one-line header objects: a split "key"/"value" pair trips the secret scanner on the public CSP hash
+vercel.json
