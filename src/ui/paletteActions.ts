@@ -1,5 +1,7 @@
 /** What the ⌘K palette can do to the open draft (kept apart so EditorShell doesn't pull in the lazy palette chunk). */
 export interface PaletteActions {
+  /** closes the palette and opens the send preview (2A, 3A) */
+  sendLetter(): void;
   newDraft(): void;
   openDrafts(): void;
   /** a label when the draft can't be renamed in this tab; null when renamed */

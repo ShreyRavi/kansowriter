@@ -289,6 +289,7 @@ export function CommandPalette({
             </Command.Group>
 
             <Command.Group heading="Document">
+              <Item label="Send as letter" kbd={`${mod()}⇧L`} onSelect={actions.sendLetter} />
               <Item label="New draft" onSelect={actions.newDraft} />
               <Item label="Open drafts" onSelect={actions.openDrafts} />
               <Command.Item value="Rename draft" onSelect={() => startEdit('rename')}>

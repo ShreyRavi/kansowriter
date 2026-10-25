@@ -1,5 +1,5 @@
 import { syntaxTree } from '@codemirror/language';
-import { RangeSetBuilder, type EditorState } from '@codemirror/state';
+import { Facet, RangeSetBuilder, type EditorState } from '@codemirror/state';
 import { Decoration, EditorView, ViewPlugin, type DecorationSet, type ViewUpdate } from '@codemirror/view';
 
 /**
@@ -23,8 +23,15 @@ const gap = lineClass('cm-gap');
 
 const MARKS = new Set(['HeaderMark', 'EmphasisMark', 'CodeMark', 'LinkMark', 'QuoteMark']);
 
+/**
+ * Whether lines the selection touches show their syntax marks (default on). The letter reader
+ * turns it off once the replay ends, so the finished letter shows no marks anywhere.
+ */
+export const revealSyntax = Facet.define<boolean, boolean>({ combine: (v) => v.every(Boolean) });
+
 function activeLines(state: EditorState): Set<number> {
   const lines = new Set<number>();
+  if (!state.facet(revealSyntax)) return lines;
   for (const r of state.selection.ranges) {
     const a = state.doc.lineAt(r.from).number;
     const b = state.doc.lineAt(r.to).number;
@@ -108,7 +115,13 @@ export const hybridMarkdown = ViewPlugin.fromClass(
       this.decorations = build(view);
     }
     update(u: ViewUpdate) {
-      if (u.docChanged || u.selectionSet || u.viewportChanged || syntaxTree(u.startState) !== syntaxTree(u.state)) {
+      if (
+        u.docChanged ||
+        u.selectionSet ||
+        u.viewportChanged ||
+        syntaxTree(u.startState) !== syntaxTree(u.state) ||
+        u.startState.facet(revealSyntax) !== u.state.facet(revealSyntax)
+      ) {
         this.decorations = build(u.view);
       }
     }

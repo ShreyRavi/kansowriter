@@ -1,0 +1,27 @@
+{
+ "_comment": "PERMANENT KOP v1 + letter v1 golden fixtures (R19). Letters already sent depend on these exact semantics. Never edit, reorder or delete a case; a format change needs a v2 decoder and new fixtures, never edits here. Adding new cases is fine.",
+ "kop": [
+  {"name": "insert into empty", "before": "", "op": [0, 0, "Hello"], "after": "Hello"},
+  {"name": "replace a word", "before": "Hello world", "op": [120, 0, 6, -5, "there"], "after": "Hello there"},
+  {"name": "append with duration", "before": "abc", "op": [5, 300, 3, "def"], "after": "abcdef"},
+  {"name": "delete a surrogate pair", "before": "a😀b", "op": [0, 0, 1, -2, 1], "after": "ab"},
+  {"name": "insert a surrogate pair", "before": "ab", "op": [0, 0, 1, "😀", 1], "after": "a😀b"},
+  {"name": "insert a ZWJ emoji", "before": "hi ", "op": [0, 0, 3, "👩‍💻"], "after": "hi 👩‍💻"},
+  {"name": "delete a ZWJ emoji (5 units)", "before": "x👩‍💻y", "op": [0, 0, 1, -5, 1], "after": "xy"},
+  {"name": "delete only the combining mark", "before": "café!", "op": [0, 0, 4, -1, 1], "after": "cafe!"},
+  {"name": "delete a combining sequence", "before": "café!", "op": [0, 0, 3, -2, 1], "after": "caf!"},
+  {"name": "insert a combining mark after a base", "before": "cafe", "op": [0, 0, 4, "́"], "after": "café"},
+  {"name": "delete spanning emoji and combining marks", "before": "a😀é👩‍💻z", "op": [0, 0, 1, -9, 1], "after": "az"},
+  {"name": "multi-run edit", "before": "The quick brown fox", "op": [10, 20, "A", -3, 7, -5, "red", 4], "after": "A quick red fox"},
+  {"name": "insert before an adjacent delete", "before": "teh end", "op": [0, 0, "the", -3, 4], "after": "the end"},
+  {"name": "retain-only op", "before": "same", "op": [0, 0, 4], "after": "same"},
+  {"name": "empty op on empty doc", "before": "", "op": [0, 0], "after": ""},
+  {"name": "newlines and CJK", "before": "line1\n中文", "op": [3000, 0, 6, -1, "日本", 1, "\n"], "after": "line1\n日本文\n"},
+  {"name": "delete everything", "before": "😀éabc", "op": [0, 0, -7], "after": ""},
+  {"name": "large timing", "before": "x", "op": [86400000, 9999, 1, " 😀👩‍💻é"], "after": "x 😀👩‍💻é"}
+ ],
+ "letters": [
+  {"encoded": "v1.q1YqU7Iy1FFKSixODUmtKFGyUnJJTSxScMxL1InJi8lT0lHKLyhWsoqONtAxMzDQMQSqdU5MSz3TqBSrE20CFAGKmekoKXyYP6MBJGRoZAARNNfRNQLygVwdUwMwH6Ro4spHDb0f5k_arVCcn5-npxQbq6OUm1qSqGRVrVRelFlSkprnCHSEobmZoaG5OdBGkGlKJVVKVrpAk2trAQ",
+   "expected": {"v": 1, "baseText": "Dear Ana,\n\n", "ops": [[0, 600, 11, "Café"], [400, 0, 16, " 😀"], [12000, 0, 17, -2], [200, 500, 17, " 👩‍💻 soon."]], "meta": {"writtenAt": 1761177600000, "tz": -120}}}
+ ]
+}

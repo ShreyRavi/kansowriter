@@ -12,3 +12,5 @@ docs/
 index.html
 # one-line header objects: a split "key"/"value" pair trips the secret scanner on the public CSP hash
 vercel.json
+# permanent KOP v1 golden fixtures: kept byte-for-byte as generated
+src/core/fixtures/

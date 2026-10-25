@@ -13,8 +13,10 @@ import { LibrarySidebar } from './LibrarySidebar';
 import { download, isMac, requestPersistence, safeFileName } from './platform';
 import { exportAll, importBackup } from './backupActions';
 import { applyUpdate, useUpdateReady } from './updates';
-import { FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
+import { CloseIcon, EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
 import { setUnsavedProvider } from './unsaved';
+import { useScrollLock } from './scrollLock';
+import { useDialog } from './useDialog';
 
 /** typing pause before the update notice may first appear while the chrome is faded */
 const UPDATE_IDLE_MS = 3000;
@@ -28,10 +30,20 @@ const CommandPalette = lazy(() =>
     .catch(() => loadPalette())
     .then((m) => ({ default: m.CommandPalette })),
 );
+// Send as letter is its own chunk too: fetched when the envelope is hovered or Send starts (the
+// same retry, then the same boundary and Reload notice; SendLoading holds its place meanwhile)
+const loadSend = () => import('./SendPanel');
+const SendPanel = lazy(() =>
+  loadSend()
+    .catch(() => loadSend())
+    .then((m) => ({ default: m.SendPanel })),
+);
+const preloadSend = () => void loadSend().catch(() => {});
 
 /**
- * Catches the palette failing (its chunk won't load, or it throws) so the error never reaches the
- * root ErrorBoundary: that would unmount the editor, its unsaved-words guard and the session.
+ * Catches the palette or the send panel failing (its chunk won't load, or it throws) so the error
+ * never reaches the root ErrorBoundary: that would unmount the editor, its unsaved-words guard and
+ * the session.
  */
 class PaletteBoundary extends Component<{ children: ReactNode; onError(): void }, { failed: boolean }> {
   state = { failed: false };
@@ -47,6 +59,31 @@ class PaletteBoundary extends Component<{ children: ReactNode; onError(): void }
   render() {
     return this.state.failed ? null : this.props.children;
   }
+}
+
+/**
+ * The send panel's frame while its chunk loads: the same quiet fixed-height placeholder the panel
+ * shows while it reads the draft, already a dialog, so Esc and Close work before the chunk arrives.
+ * It hands focus back through closeSend, never on unmount: handing it to the editor on the way to
+ * the panel would make WebKit scroll the draft to its caret.
+ */
+function SendLoading({ onClose }: { onClose(): void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useDialog(ref, onClose, undefined, false);
+  return (
+    <div className="send-wrap" role="dialog" aria-modal="true" aria-labelledby="send-title" ref={ref}>
+      <div className="send-top ui">
+        <h2 id="send-title">Send as letter</h2>
+        <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+          <CloseIcon />
+        </button>
+      </div>
+      <div className="send-preview" />
+      <div className="send-panel ui">
+        <div className="send-loading" aria-busy="true" />
+      </div>
+    </div>
+  );
 }
 
 /** Resolves true when it left; false when unsaved words kept the editor open (the notice then holds `go`). */
@@ -85,11 +122,19 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sidebar, setSidebar] = useState(false);
   const [palette, setPalette] = useState(false);
+  /** the open send panel: `unsaved` when the page holds words storage doesn't (the letter can't carry them) */
+  const [send, setSend] = useState<{ unsaved: boolean } | null>(null);
+  /** Send was opened from the text (shortcut, palette): Close returns to the text, not the opener */
+  const sendRefocusRef = useRef(false);
+  /** where focus was when Send opened (the loading frame doesn't hand it back; closeSend does) */
+  const sendOpenerRef = useRef<HTMLElement | null>(null);
+  // the draft behind an overlay never scrolls (typewriter and the editor's own scroll are untouched otherwise)
+  useScrollLock(palette || sidebar || !!send);
   const [mountKey, setMountKey] = useState(0);
   /** the update notice, latched: it first appears only while the writer isn't mid-sentence, then stays */
   const [showUpdate, setShowUpdate] = useState(false);
-  /** the palette couldn't open (its chunk is likely gone after a deploy): offer a reload */
-  const [paletteFailed, setPaletteFailed] = useState(false);
+  /** the palette or the send panel couldn't open (its chunk is likely gone after a deploy): offer a reload */
+  const [chunkFailed, setChunkFailed] = useState<'commands' | 'Send as letter' | null>(null);
   const lastActivity = useRef(0);
   const fadeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /** this tab stopped saving and the editor holds words storage doesn't: every guard checks it */
@@ -382,8 +427,40 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     update({ theme: resolveTheme(settingsRef.current.theme) === 'night' ? 'paper' : 'night' });
   }, [update]);
 
+  /** Send as letter (3A): save the word being typed first, so the letter ends where the page does */
+  const openSend = useCallback(async (from: 'button' | 'text') => {
+    sendOpenerRef.current = document.activeElement as HTMLElement | null;
+    setPalette(false);
+    setSidebar(false);
+    preloadSend();
+    try {
+      await writerRef.current?.flush(true);
+    } catch {
+      // a failed save keeps its notice; the letter carries what storage has (and says so)
+    }
+    // anything opened while the flush ran gives way to the send panel
+    setPalette(false);
+    setSidebar(false);
+    sendRefocusRef.current = from === 'text';
+    setSend({ unsaved: staleRef.current || !!writerRef.current?.dirty });
+  }, []);
+  const closeSend = useCallback(() => {
+    const refocus = sendRefocusRef.current;
+    const opener = sendOpenerRef.current;
+    sendRefocusRef.current = false;
+    sendOpenerRef.current = null;
+    setSend(null);
+    // Send opened from the text goes back to the text; otherwise to the opener (the panel's
+    // useDialog does that too, unless the loading frame stood in for it first)
+    requestAnimationFrame(() => {
+      if (refocus) viewRef.current?.focus();
+      else if (opener && document.contains(opener) && document.activeElement !== opener) opener.focus();
+    });
+  }, []);
+
   const actions: PaletteActions = useMemo(
     () => ({
+      sendLetter: () => void openSend('text'),
       newDraft: () => {
         setPalette(false);
         void leaveRef.current(() => onNew());
@@ -449,7 +526,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         return 'Reset';
       },
     }),
-    [onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
+    [openSend, onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
   );
 
   // ---------- leaving with unsaved text ----------
@@ -546,9 +623,20 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     const onKey = (e: KeyboardEvent) => {
       const mod = isMac() ? e.metaKey : e.ctrlKey;
       const k = e.key.toLowerCase();
+      if (send) {
+        // the send panel is modal: only its own shortcut (and Esc, which useDialog takes) apply
+        if (mod && e.shiftKey && k === 'l') {
+          e.preventDefault();
+          closeSend();
+        }
+        return;
+      }
       if (mod && !e.shiftKey && k === 'k') {
         e.preventDefault();
         setPalette((p) => !p);
+      } else if (mod && e.shiftKey && k === 'l') {
+        e.preventDefault();
+        void openSend('text');
       } else if (mod && e.shiftKey && k === 'n') {
         e.preventDefault();
         toggleTheme();
@@ -565,12 +653,12 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         e.preventDefault();
         update({ focus: settingsRef.current.focus === 'sentence' ? 'off' : 'sentence' });
       } else if (e.key === 'Escape') {
-        if (!palette && !sidebar) reveal();
+        if (!palette && !sidebar && !send) reveal();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [palette, sidebar, reveal, toggleTheme, exportText, update]);
+  }, [palette, sidebar, send, reveal, toggleTheme, exportText, update, openSend, closeSend]);
 
   // ---------- render ----------
   const goal = settings.goal;
@@ -584,7 +672,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     '--writing-line': String(face.line),
   } as CSSProperties;
   const night = resolveTheme(settings.theme) === 'night';
-  const chromeClass = `chrome${chromeVisible || palette || sidebar ? '' : ' hidden'}`;
+  const chromeClass = `chrome${chromeVisible || palette || sidebar || send ? '' : ' hidden'}`;
   const closeOverlay = () => {
     setPalette(false);
     setSidebar(false);
@@ -617,6 +705,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             onClick={toggleTheme}
           >
             {night ? <SunIcon /> : <MoonIcon />}
+          </button>
+          <button
+            type="button"
+            className="icon-btn hide-phone"
+            aria-label="Send as letter"
+            onPointerEnter={preloadSend}
+            onFocus={preloadSend}
+            onClick={() => void openSend('button')}
+          >
+            <EnvelopeIcon />
           </button>
           <button
             type="button"
@@ -657,10 +755,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             </button>
           </div>
         )}
-        {!notice && !(showUpdate && !staleRef.current) && paletteFailed && (
-          // lowest priority: below the update notice, whose Reload brings the new palette too
+        {!notice && !(showUpdate && !staleRef.current) && chunkFailed && (
+          // lowest priority: below the update notice, whose Reload brings the new chunks too
           <div className="notice" role="status">
-            <span>Couldn’t open commands. Reload to update</span>
+            <span>Couldn’t open {chunkFailed}. Reload to update</span>
             <button type="button" className="text-btn" onClick={() => void leave(() => location.reload())}>
               Reload
             </button>
@@ -759,11 +857,23 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           onExportAll={actions.exportAll}
         />
       )}
+      {send && (
+        <PaletteBoundary
+          onError={() => {
+            closeSend();
+            setChunkFailed('Send as letter');
+          }}
+        >
+          <Suspense fallback={<SendLoading onClose={closeSend} />}>
+            <SendPanel draftId={draftId} title={title} unsaved={send.unsaved} onClose={closeSend} />
+          </Suspense>
+        </PaletteBoundary>
+      )}
       {palette && (
         <PaletteBoundary
           onError={() => {
             closeOverlay();
-            setPaletteFailed(true);
+            setChunkFailed('commands');
           }}
         >
           <Suspense fallback={null}>
