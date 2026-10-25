@@ -39,12 +39,14 @@ export function pickFile(accept: string): Promise<File | null> {
   });
 }
 
+/** A title as a file name: no characters the OS refuses, and no trailing dots or spaces ("See you soon." + ext ≠ "soon..ext"). */
 export function safeFileName(title: string): string {
   return (
     (title || 'Untitled')
       .replace(/[\\/:*?"<>|]+/g, '')
       .trim()
-      .slice(0, TITLE_MAX) || 'Untitled'
+      .slice(0, TITLE_MAX)
+      .replace(/[.\s]+$/, '') || 'Untitled'
   );
 }
 

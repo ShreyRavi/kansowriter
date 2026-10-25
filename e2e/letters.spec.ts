@@ -15,6 +15,8 @@ import {
 } from './helpers';
 
 const PRIVACY = 'Anyone with this link can read the letter. It lives in the link, in your chat and in browser history.';
+const FILE_PRIVACY = 'Anyone with this file can read the letter. It lives in the file, not on a server.';
+const DAMAGED = 'This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.';
 /** production builds link to the canonical origin (D4, src/ui/letterLinks.ts) */
 const CANONICAL = 'https://kansowriter.vercel.app';
 const isMobile = (page: Page) => page.viewportSize()!.width < 640;
@@ -90,6 +92,15 @@ async function toTheEnd(reader: Page) {
 const SLOW_TEXT = 'One line. Another line.';
 const slowLetter = () =>
   encodeTestLetter({ v: 1, baseText: '', ops: [[0, 30_000, SLOW_TEXT]], meta: { writtenAt: Date.UTC(2026, 9, 22, 12), tz: 0 } });
+
+/** 26 ops 250 ms apart: a replay whose length (12 750 ms) is not a whole number of scrubber steps */
+const STEPPED_TEXT = 'Dear Sam,\n\nThe garden is quiet this morning. I wrote this slowly so you could watch it arrive.\n\nLove, R.';
+const steppedLetter = () => {
+  const ops: (number | string)[][] = [];
+  for (let i = 0; i < STEPPED_TEXT.length; i += 4)
+    ops.push(i ? [250, 250, i, STEPPED_TEXT.slice(i, i + 4)] : [0, 250, STEPPED_TEXT.slice(0, 4)]);
+  return encodeTestLetter({ v: 1, baseText: '', ops });
+};
 
 /** A file dropped on `selector`, as the OS does it (dragover, then drop); returns whether the page claimed each. */
 async function dropFile(page: Page, selector: string, name: string, content: string) {
@@ -198,6 +209,71 @@ test.describe('letters (v0.1)', () => {
     await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
   });
 
+  test('paused, the scrubber reaches the true end, and the end finishes the replay', async ({ page }) => {
+    await page.goto(`/l#${await steppedLetter()}`);
+    await revealControls(page);
+    await page.getByRole('button', { name: 'Pause' }).click();
+    const scrubber = page.getByRole('slider', { name: 'Replay position' });
+    const max = Number(await scrubber.getAttribute('max'));
+    expect(max % 100).toBe(0); // a whole number of steps, so the range can land on it
+    await scrubber.focus();
+    await page.keyboard.press('End');
+    await expect(scrubber).toHaveValue(String(max));
+    await expect(page.getByRole('textbox', { name: 'Letter' })).toHaveText(STEPPED_TEXT.replace(/\n/g, ''));
+    await expect(page.getByRole('button', { name: 'Replay' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Skip to the end' })).toBeDisabled();
+    await expect(page.getByRole('link', { name: 'Written with Kansowriter' })).toBeAttached();
+    // one step back and the end is undone; one step on and it is reached again
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.getByRole('link', { name: 'Written with Kansowriter' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Skip to the end' })).toBeEnabled();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.getByRole('link', { name: 'Written with Kansowriter' })).toBeAttached();
+  });
+
+  test('paused, every arrow press moves the scrubber one step', async ({ page }) => {
+    await page.goto(`/l#${await slowLetter()}`);
+    await revealControls(page);
+    await page.getByRole('button', { name: 'Pause' }).click();
+    await expect(page.getByRole('button', { name: 'Play' })).toBeVisible();
+    const scrubber = page.getByRole('slider', { name: 'Replay position' });
+    await scrubber.focus();
+    const at = Number(await scrubber.inputValue());
+    expect(at % 100).toBe(0);
+    await page.keyboard.press('ArrowRight');
+    await expect(scrubber).toHaveValue(String(at + 100));
+    await page.keyboard.press('ArrowRight');
+    await expect(scrubber).toHaveValue(String(at + 200));
+    await page.keyboard.press('ArrowLeft');
+    await expect(scrubber).toHaveValue(String(at + 100));
+  });
+
+  test('Skip to the end hands focus to Replay instead of dropping it', async ({ page }) => {
+    await page.goto(`/l#${await slowLetter()}`);
+    await revealControls(page);
+    const skip = page.getByRole('button', { name: 'Skip to the end' });
+    await skip.focus();
+    await page.keyboard.press('Enter');
+    await expect(skip).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Replay' })).toBeFocused();
+  });
+
+  test('on phones the scrubber is a full touch target and the controls fit on one line', async ({ page }) => {
+    test.skip(!isMobile(page), 'coarse pointers only');
+    await page.goto(`/l#${await slowLetter()}`);
+    await revealControls(page);
+    const scrubber = await page.getByRole('slider', { name: 'Replay position' }).boundingBox();
+    expect(scrubber!.height).toBeGreaterThanOrEqual(44);
+    const skip = await page.getByRole('button', { name: 'Skip to the end' }).boundingBox();
+    const pause = await page.getByRole('button', { name: 'Pause' }).boundingBox();
+    expect(skip!.height).toBe(pause!.height); // one line, no taller than its neighbour
+    const controls = await page.locator('.replay-controls').boundingBox();
+    const width = page.viewportSize()!.width;
+    expect(controls!.x).toBeGreaterThanOrEqual(0);
+    expect(controls!.x + controls!.width).toBeLessThanOrEqual(width);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+
   test('under reduced motion the reader still replays, with a caret that never blinks (17A)', async ({ page }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto(`/l#${await slowLetter()}`);
@@ -290,13 +366,16 @@ test.describe('letters (v0.1)', () => {
   test('a letter too long for a link downloads as a file that opens in the reader', async ({ page }, testInfo) => {
     test.slow();
     const editor = await startWriting(page);
-    await write(page, editor, '# Long letter\n\n');
+    await write(page, editor, '# Long letter.\n\n'); // a title ending in a dot: never "Long letter..kansoletter"
     // incompressible text: well past the 8 KB link size once deflated
     const noise = randomBytes(10_500).toString('base64'); // ~14 000 characters, ~6 bits each
     await page.keyboard.insertText(noise);
     const dialog = await openSend(page);
     await dialog.getByRole('radio', { name: 'Final text only' }).check();
     await expect(dialog.getByText(/Too long for a link · [\d.]+ KB file/)).toBeVisible({ timeout: 20_000 });
+    // only a file goes out, so the privacy line speaks of the file
+    await expect(dialog.getByText(FILE_PRIVACY)).toBeVisible();
+    await expect(dialog.getByText(PRIVACY)).toHaveCount(0);
     const [download] = await Promise.all([
       page.waitForEvent('download'),
       dialog.getByRole('button', { name: 'Download letter file' }).click(),
@@ -341,7 +420,7 @@ test.describe('letters (v0.1)', () => {
       mimeType: 'application/x-kansoletter',
       buffer: Buffer.alloc(256 * 1024 + 65, 'a'),
     });
-    await expect(page.getByText('This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.')).toBeVisible();
+    await expect(page.getByText('That file isn’t a Kansowriter letter.')).toBeVisible();
     expect(await page.evaluate(() => (window as unknown as { reads: number }).reads)).toBe(0);
   });
 
@@ -409,8 +488,34 @@ test.describe('letters (v0.1)', () => {
 
   test('a damaged link says so calmly', async ({ page }) => {
     await page.goto('/l#v1.garbage');
-    await expect(page.getByText('This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.')).toBeVisible();
+    await expect(page.getByText(DAMAGED)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Open a letter file' })).toBeVisible();
+  });
+
+  test('a letter from a newer Kansowriter says so, not that it was damaged', async ({ page }) => {
+    await page.goto('/l#v2.c29tZXRoaW5nIG5ldw');
+    await expect(page.getByRole('alert')).toHaveText('This letter was written with a newer Kansowriter. Open it in the latest version.');
+    await expect(page.getByText(DAMAGED)).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Copy link' })).toBeVisible();
+  });
+
+  test('a file that isn’t a letter says so, and offers another file', async ({ page }) => {
+    await page.goto('/l');
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'photo.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13]),
+    });
+    await expect(page.getByRole('alert')).toHaveText('That file isn’t a Kansowriter letter.');
+    await expect(page.getByText(DAMAGED)).toHaveCount(0);
+    // and the way forward still opens a letter
+    await expect(page.getByRole('button', { name: 'Open a letter file' })).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({
+      name: 'a.kansoletter',
+      mimeType: 'application/x-kansoletter',
+      buffer: Buffer.from(await encodeTestLetter({ v: 1, baseText: 'The right file.', ops: [] })),
+    });
+    await expect(page.getByRole('textbox', { name: 'Letter' })).toHaveText('The right file.');
   });
 
   test('without DecompressionStream the reader asks for a newer browser (R14)', async ({ page }) => {

@@ -922,6 +922,9 @@ main.boot .unsaved-text {
   border-radius: var(--rounded-panel);
   background: var(--c-ground);
 }
+.replay-controls .text-btn {
+  white-space: nowrap;
+}
 .replay-controls .scrubber {
   width: 240px;
   max-width: 40vw;
@@ -1263,6 +1266,11 @@ main.boot .unsaved-text {
 }
 /* touch-only screens have nothing to drag a file from */
 @media (pointer: coarse) {
+  /* a full 44px to land a thumb on; the track itself is drawn no thicker */
+  .replay-controls .scrubber {
+    height: var(--space-target);
+    margin: 0;
+  }
   .drop-zone {
     border: 0;
   }

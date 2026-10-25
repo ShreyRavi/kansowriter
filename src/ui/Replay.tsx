@@ -23,6 +23,8 @@ const clock = (ms: number) => {
 const IDLE_MS = 3000; // motion.chromeFadeDelay
 /** React hears about the clock at most this often (the replay line itself moves every frame) */
 const STATE_EVERY_MS = 100;
+/** one scrubber step (an arrow key press); its max rounds up to a whole step so the true end is reachable */
+const SCRUB_STEP_MS = 100;
 
 interface Props {
   letter: Letter;
@@ -50,6 +52,7 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
   const playerRef = useRef<ReplayPlayer | null>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
   const progressRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const [state, setState] = useState<PlayerState>({ t: 0, duration: 0, playing: true, done: false });
   const [shown, setShown] = useState(false);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -175,6 +178,10 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
   useEffect(() => () => void (hideTimer.current && clearTimeout(hideTimer.current)), []);
 
   const date = useMemo(() => writtenLine(letter.meta), [letter.meta]);
+  // the range runs on whole steps (so each arrow press moves exactly one), up to the first step at
+  // or past the end: the last step seeks to the end (the player clamps) and finishes the replay
+  const scrubMax = Math.max(SCRUB_STEP_MS, Math.ceil(state.duration / SCRUB_STEP_MS) * SCRUB_STEP_MS);
+  const scrubValue = state.done || state.t >= state.duration ? scrubMax : Math.floor(state.t / SCRUB_STEP_MS) * SCRUB_STEP_MS;
 
   return (
     <div className={`replay${state.done ? ' ended' : ''} ${className}`}>
@@ -185,7 +192,7 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
       </div>
       {controls && !still && (
         <div ref={controlsRef} className={`replay-controls ui chrome${shown ? '' : ' hidden'}`} onFocus={reveal}>
-          <button type="button" className="text-btn" onClick={toggle}>
+          <button ref={toggleRef} type="button" className="text-btn" onClick={toggle}>
             {state.playing ? 'Pause' : state.done ? 'Replay' : 'Play'}
           </button>
           <input
@@ -193,13 +200,22 @@ export function Replay({ letter, controls, label, className = '', onEnded, child
             className="scrubber"
             aria-label="Replay position"
             min={0}
-            max={Math.max(1, state.duration)}
-            step={100}
-            value={Math.round(state.t)}
+            max={scrubMax}
+            step={SCRUB_STEP_MS}
+            value={scrubValue}
             aria-valuetext={`${clock(state.t)} of ${clock(state.duration)}`}
             onChange={(e) => playerRef.current?.seek(Number(e.target.value))}
           />
-          <button type="button" className="text-btn" disabled={state.done} onClick={() => playerRef.current?.skipToEnd()}>
+          <button
+            type="button"
+            className="text-btn"
+            disabled={state.done}
+            onClick={() => {
+              playerRef.current?.skipToEnd();
+              // Skip disables itself at the end: focus moves on to Replay, never down to the page
+              toggleRef.current?.focus();
+            }}
+          >
             Skip to the end
           </button>
         </div>

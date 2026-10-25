@@ -42,7 +42,8 @@ export interface Letter {
   meta?: LetterMeta;
 }
 
-export type LetterErrorKind = 'damaged' | 'too-large' | 'unsupported';
+/** 'newer': a letter format from a later Kansowriter ("v2." and up, or a payload v above 1) */
+export type LetterErrorKind = 'damaged' | 'too-large' | 'unsupported' | 'newer';
 export class LetterError extends Error {
   constructor(
     readonly kind: LetterErrorKind,
@@ -148,14 +149,19 @@ export async function encodeLetter(letter: Letter): Promise<string> {
  * document exactly. Throws LetterError('damaged' | 'too-large' | 'unsupported').
  *
  * A leading "#" is tolerated, and surrounding whitespace (a file's trailing newline) is trimmed.
- * The "v1." prefix is the version gate: any other prefix is 'unsupported'. An inner `v` other
- * than 1 under a v1 prefix is a malformed payload, so it is 'damaged'.
+ * The "v1." prefix is the version gate: a later version's prefix ("v2." and up) is 'newer', any
+ * other prefix 'unsupported'. An inner `v` above 1 is 'newer' too; any other inner `v` than 1
+ * under a v1 prefix is a malformed payload, so it is 'damaged'.
  */
 export async function decodeLetter(encoded: string): Promise<Letter> {
   if (typeof encoded !== 'string') throw new LetterError('damaged');
   let s = encoded.trim();
   if (s.startsWith('#')) s = s.slice(1);
-  if (!s.startsWith(LETTER_PREFIX)) throw new LetterError('unsupported', 'unknown letter version');
+  if (!s.startsWith(LETTER_PREFIX)) {
+    throw NEWER_PREFIX.test(s)
+      ? new LetterError('newer', 'letter from a newer version')
+      : new LetterError('unsupported', 'unknown letter version');
+  }
   if (s.length > LETTER_CAP_BYTES) throw new LetterError('too-large', 'encoded letter over the cap');
   const bytes = fromBase64Url(s.slice(LETTER_PREFIX.length));
   if (bytes.length === 0) throw new LetterError('damaged', 'empty payload');
@@ -169,6 +175,20 @@ export async function decodeLetter(encoded: string): Promise<Letter> {
   return validateLetter(data);
 }
 
+/** "v2." … "v99…." : a prefix this version can't read but a later one wrote */
+const NEWER_PREFIX = /^v(?:[2-9]|[1-9]\d+)\./;
+
+/**
+ * What the reader says when a letter won't open (7A): written by a newer Kansowriter, a file
+ * that was never a letter (no letter prefix at all, so never a link cut short), or damaged.
+ */
+export type LetterFailure = 'newer' | 'not-a-letter' | 'damaged';
+export function letterFailure(e: unknown, from: 'link' | 'file'): LetterFailure {
+  if (e instanceof LetterError && e.kind === 'newer') return 'newer';
+  if (from === 'file' && e instanceof LetterError && e.kind === 'unsupported') return 'not-a-letter';
+  return 'damaged';
+}
+
 const isObj = (x: unknown): x is Record<string, unknown> => typeof x === 'object' && x !== null && !Array.isArray(x);
 const isNum = (x: unknown): x is number => typeof x === 'number' && Number.isFinite(x);
 const TOP_KEYS = new Set(['v', 'baseText', 'ops', 'meta']);
@@ -177,6 +197,8 @@ const TOP_KEYS = new Set(['v', 'baseText', 'ops', 'meta']);
 export function validateLetter(data: unknown): Letter {
   const damaged = (why: string) => new LetterError('damaged', why);
   if (!isObj(data)) throw damaged('payload is not an object');
+  // a later payload version may carry keys this one doesn't know: name the version, not the keys
+  if (typeof data.v === 'number' && Number.isInteger(data.v) && data.v > 1) throw new LetterError('newer', 'payload from a newer version');
   for (const k of Object.keys(data)) if (!TOP_KEYS.has(k)) throw damaged(`unknown key ${k}`);
   if (data.v !== 1) throw damaged('payload version is not 1');
   const { baseText, ops } = data;

@@ -10,6 +10,7 @@ import {
   encodeLetter,
   LETTER_CAP_BYTES,
   LetterError,
+  letterFailure,
   lettersSupported,
   LETTER_MIME,
   MAX_DECOMPRESSED_BYTES,
@@ -202,9 +203,13 @@ describe('letter schema (R24)', () => {
     await rejects(decodeLetter('v1.' + b64url(await deflateRaw('{"v":1,"baseText":"","ops":[],"__proto__":{}}'))), 'damaged');
   });
 
-  it('inner v other than 1 under the v1 prefix is damaged (the prefix is the version gate)', async () => {
-    await rejects(decodeLetter(await raw({ v: 2, baseText: '', ops: [] })), 'damaged');
+  it('inner v above 1 is newer (even with keys v1 never had); any other inner v is damaged', async () => {
+    await rejects(decodeLetter(await raw({ v: 2, baseText: '', ops: [] })), 'newer');
+    await rejects(decodeLetter(await raw({ v: 3, text: 'from the future' })), 'newer');
     await rejects(decodeLetter(await raw({ baseText: '', ops: [] })), 'damaged');
+    await rejects(decodeLetter(await raw({ v: 0, baseText: '', ops: [] })), 'damaged');
+    await rejects(decodeLetter(await raw({ v: 1.5, baseText: '', ops: [] })), 'damaged');
+    await rejects(decodeLetter(await raw({ v: '2', baseText: '', ops: [] })), 'damaged');
   });
 
   it('rejects wrong types', async () => {
@@ -232,8 +237,12 @@ describe('letter schema (R24)', () => {
     await rejects(decodeLetter(await raw({ v: 1, baseText: '', ops: [[0, 0, '']] })), 'damaged');
   });
 
-  it('bad prefix → unsupported; garbage → damaged', async () => {
-    await rejects(decodeLetter('v2.abc'), 'unsupported');
+  it('later prefix → newer; other prefix → unsupported; garbage → damaged', async () => {
+    await rejects(decodeLetter('v2.abc'), 'newer');
+    await rejects(decodeLetter('#v10.abc'), 'newer');
+    await rejects(decodeLetter('v0.abc'), 'unsupported');
+    await rejects(decodeLetter('v01.abc'), 'unsupported');
+    await rejects(decodeLetter('v2abc'), 'unsupported');
     await rejects(decodeLetter(''), 'unsupported');
     await rejects(decodeLetter('hello'), 'unsupported');
     await rejects(decodeLetter('v1.'), 'damaged');
@@ -243,6 +252,31 @@ describe('letter schema (R24)', () => {
     await rejects(decodeLetter('v1.' + b64url(await deflateRaw('{not json'))), 'damaged');
     const good = await encodeLetter({ v: 1, baseText: 'hello there', ops: [] });
     await rejects(decodeLetter(good.slice(0, good.length - 4)), 'damaged'); // truncated
+  });
+
+  it('letterFailure: newer, a file that was never a letter, else damaged (7A)', async () => {
+    const failure = (encoded: string) =>
+      decodeLetter(encoded).then(
+        () => null,
+        (e: unknown) => e,
+      );
+    const good = await encodeLetter({ v: 1, baseText: 'hello there', ops: [] });
+    const cases: [string, 'link' | 'file', string][] = [
+      ['v2.abc', 'link', 'newer'],
+      ['v2.abc', 'file', 'newer'],
+      [await raw({ v: 2, baseText: '', ops: [] }), 'file', 'newer'],
+      ['', 'file', 'not-a-letter'], // an empty .kansoletter
+      ['\x89PNG\r\n', 'file', 'not-a-letter'], // a photo
+      ['Dear Sam,', 'file', 'not-a-letter'], // notes.txt
+      ['hello', 'link', 'damaged'], // a link mangled past its prefix
+      [good.slice(0, good.length - 4), 'link', 'damaged'], // truncated
+      [good.slice(0, good.length - 4), 'file', 'damaged'],
+      ['v1.!!!', 'file', 'damaged'],
+    ];
+    for (const [encoded, from, want] of cases)
+      expect(letterFailure(await failure(encoded), from), `${from} ${encoded.slice(0, 12)}`).toBe(want);
+    expect(letterFailure(new LetterError('too-large'), 'link')).toBe('damaged');
+    expect(letterFailure(new Error('read failed'), 'file')).toBe('damaged');
   });
 
   it('rejects carriage returns', async () => {

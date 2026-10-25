@@ -279,7 +279,9 @@ export function SendPanel({
               )}
             </div>
             <p className="send-privacy">
-              Anyone with this link can read the letter. It lives in the link, in your chat and in browser history.
+              {asLink
+                ? 'Anyone with this link can read the letter. It lives in the link, in your chat and in browser history.'
+                : 'Anyone with this file can read the letter. It lives in the file, not on a server.'}
             </p>
           </>
         )}

@@ -1,9 +1,23 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from 'react';
-import { decodeLetter, LETTER_CAP_BYTES, LETTER_FILE_EXTENSION, LETTER_MIME, lettersSupported, type Letter } from '../core/letter';
+import {
+  decodeLetter,
+  LETTER_CAP_BYTES,
+  LETTER_FILE_EXTENSION,
+  LETTER_MIME,
+  letterFailure,
+  lettersSupported,
+  type Letter,
+  type LetterFailure,
+} from '../core/letter';
 import { CopyLink } from './CopyLink';
 import { Replay } from './Replay';
 
-type View = { name: 'decoding' } | { name: 'empty' } | { name: 'damaged' } | { name: 'unsupported' } | { name: 'letter'; letter: Letter };
+type View =
+  | { name: 'decoding' }
+  | { name: 'empty' }
+  | { name: LetterFailure; from?: 'link' | 'file' }
+  | { name: 'unsupported' }
+  | { name: 'letter'; letter: Letter };
 
 /** Chromium's File Handling API (an installed app opening a .kansoletter, R1) */
 interface LaunchParams {
@@ -27,6 +41,7 @@ const hasFiles = (e: DragEvent) => [...e.dataTransfer.types].includes('Files');
  *
  *   /l#v1.…  ─decode─► replay        /l (no fragment) ─► "Open a letter file" (+ drop zone)
  *   damaged / too large ─► "didn’t arrive whole"     no DecompressionStream (R14) ─► newer browser
+ *   v2. and up ─► "a newer Kansowriter"              a file that isn't a letter ─► says so
  */
 export function Reader() {
   const [view, setView] = useState<View>({ name: 'decoding' });
@@ -36,18 +51,18 @@ export function Reader() {
   /** each open (link, file, cleared hash) supersedes any decode still running */
   const seq = useRef(0);
 
-  const open = useCallback(async (encoded: string, mine = ++seq.current) => {
+  const open = useCallback(async (encoded: string, mine = ++seq.current, from: 'link' | 'file' = 'link') => {
     setEnded(false);
     if (!lettersSupported()) return setView({ name: 'unsupported' });
     setView({ name: 'decoding' });
     try {
       const letter = await decodeLetter(encoded.trim());
       if (mine === seq.current) setView({ name: 'letter', letter });
-    } catch {
+    } catch (e) {
       if (mine !== seq.current) return;
-      // browser support was checked above; a decoder 'unsupported' is an unknown letter version,
-      // which this reader can't show either (no error codes on screen, 7A)
-      setView({ name: 'damaged' });
+      // browser support was checked above: what's left is a newer letter, a file that was never a
+      // letter, or a damaged one (no error codes on screen, 7A)
+      setView({ name: letterFailure(e, from), from });
     }
   }, []);
 
@@ -58,11 +73,11 @@ export function Reader() {
       // over the cap it can't be a letter: never read it into memory
       if (file.size > LETTER_CAP_BYTES + FILE_SLACK_BYTES) {
         setEnded(false);
-        return setView({ name: 'damaged' });
+        return setView({ name: 'not-a-letter' });
       }
       try {
         const text = await file.text();
-        if (mine === seq.current) await open(text, mine);
+        if (mine === seq.current) await open(text, mine, 'file');
       } catch {
         if (mine === seq.current) setView({ name: 'damaged' });
       }
@@ -169,6 +184,19 @@ export function Reader() {
       {view.name === 'damaged' && (
         <div className="reader-message">
           <p role="alert">This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.</p>
+          {fileButton('text-btn')}
+        </div>
+      )}
+      {view.name === 'newer' && (
+        <div className="reader-message">
+          <p role="alert">This letter was written with a newer Kansowriter. Open it in the latest version.</p>
+          {/* a link can be carried to a newer copy; a file is opened again once this one updates */}
+          {view.from === 'file' ? fileButton('text-btn') : <CopyLink link={location.href} />}
+        </div>
+      )}
+      {view.name === 'not-a-letter' && (
+        <div className="reader-message">
+          <p role="alert">That file isn’t a Kansowriter letter.</p>
           {fileButton('text-btn')}
         </div>
       )}

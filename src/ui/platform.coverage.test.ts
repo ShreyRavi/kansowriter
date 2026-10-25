@@ -17,6 +17,13 @@ describe('safeFileName', () => {
     expect(safeFileName('///:::')).toBe('Untitled');
     expect(safeFileName('   ')).toBe('Untitled');
   });
+  it('drops trailing dots and spaces, so the extension never follows a dot', () => {
+    expect(safeFileName('See you soon.')).toBe('See you soon');
+    expect(safeFileName('Wait... ')).toBe('Wait');
+    expect(safeFileName('v1.2 notes')).toBe('v1.2 notes');
+    expect(safeFileName('...')).toBe('Untitled');
+    expect(safeFileName('x'.repeat(79) + '. tail')).toBe('x'.repeat(79));
+  });
   it('caps the name at 80 characters', () => {
     expect(safeFileName('x'.repeat(200))).toHaveLength(80);
   });
