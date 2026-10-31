@@ -13,4 +13,6 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
-startUpdates();
+// the macOS app ships its files inside the .app: no service worker or update notice there
+if (import.meta.env.MODE === 'desktop') void import('./platform/desktop').then((m) => m.startDesktop());
+else startUpdates();

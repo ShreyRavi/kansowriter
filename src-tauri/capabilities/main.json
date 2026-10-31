@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The writing window may only tell the app it has saved before quitting. No core, file system, shell or opener access: downloads and outside links are handled natively.",
+  "windows": ["main"],
+  "permissions": ["allow-quit-ready"]
+}

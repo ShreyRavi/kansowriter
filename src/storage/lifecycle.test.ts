@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { attachDraftSession, STEAL_AFTER_MS, type SessionHandle } from './lifecycle';
+import { attachDraftSession, flushOpenDrafts, STEAL_AFTER_MS, type SessionHandle } from './lifecycle';
 import { BATCH_MS, DraftWriter } from './writer';
 import { IndexedDbAdapter } from './idb';
 import { newDraft } from '../core/draft';
@@ -382,6 +382,57 @@ describe('attachDraftSession (single writer, R23)', () => {
     document.dispatchEvent(new Event('visibilitychange'));
     await until(() => a.writer!.savedText === 'Hel');
     expect((await db.loadDraft('d1'))!.text).toBe('Hel');
+  });
+
+  it('flushOpenDrafts saves the open word and waits for it (the desktop app quits right after)', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['Last words'], at: Date.now(), kind: 'type' });
+    expect(await flushOpenDrafts()).toBe(true);
+    expect((await db.loadDraft('d1'))!.text).toBe('Last words');
+  });
+
+  it('flushOpenDrafts reports unsaved words when the write fails, and forgets disposed sessions', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['kept'], at: Date.now(), kind: 'type' });
+    vi.spyOn(db, 'append').mockRejectedValue(new Error('disk full'));
+    expect(await flushOpenDrafts()).toBe(false);
+    vi.restoreAllMocks();
+    await a.dispose();
+    expect(await flushOpenDrafts()).toBe(true);
+  });
+
+  it('flushOpenDrafts waits for a draft still closing (switch drafts, then quit at once)', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['switched away'], at: Date.now(), kind: 'type' });
+    const append = db.append.bind(db);
+    vi.spyOn(db, 'append').mockImplementation(async (...args) => {
+      await new Promise((r) => setTimeout(r, 50)); // a slow last append
+      return append(...args);
+    });
+    const disposing = a.dispose(); // not awaited: the editor moved on to another draft
+    expect(await flushOpenDrafts()).toBe(true);
+    expect((await db.loadDraft('d1'))!.text).toBe('switched away');
+    await disposing;
+  });
+
+  it('flushOpenDrafts reports a closing draft whose last save failed', async () => {
+    const log: string[] = [];
+    const a = open('a', log);
+    await until(() => a.writer !== null);
+    a.writer!.push({ runs: ['lost?'], at: Date.now(), kind: 'type' });
+    vi.spyOn(db, 'append').mockRejectedValue(new Error('disk full'));
+    const disposing = a.dispose();
+    expect(await flushOpenDrafts()).toBe(false);
+    await disposing;
+    expect(log).toContain('a:stale:lost?'); // the text was handed back, as before
+    vi.restoreAllMocks();
+    expect(await flushOpenDrafts()).toBe(true); // settled disposals are forgotten
   });
 
   it('re-opening the same draft while the previous session is still disposing becomes writable, not read-only', async () => {
