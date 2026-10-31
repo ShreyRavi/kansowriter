@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EditorView } from '@codemirror/view';
-import { createEditor } from './setup';
+import { createEditor, setReadOnly } from './setup';
 import { createReaderView } from './reader';
 import type { Change } from '../storage/writer';
 
@@ -89,5 +89,27 @@ describe('hybrid rendering: underline, strikethrough, checklist boxes', () => {
     expect(box.getAttribute('aria-readonly')).toBe('true');
     box.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     expect(view.state.doc.line(3).text).toBe('- [ ] milk');
+  });
+
+  it('boxes follow the tab turning read-only and back (aria-readonly never goes stale)', () => {
+    const { view, host, changes } = editor(DOC);
+    const box = () => host.querySelector<HTMLElement>('[role="checkbox"]')!;
+    expect(box().hasAttribute('aria-readonly')).toBe(false);
+    setReadOnly(view, true);
+    expect(box().getAttribute('aria-readonly')).toBe('true');
+    box().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(changes.length).toBe(0);
+    setReadOnly(view, false);
+    expect(box().hasAttribute('aria-readonly')).toBe(false);
+    box().dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(view.state.doc.line(3).text).toBe('- [x] milk');
+  });
+
+  it('bullets show as • off the caret line, the marker back on it', () => {
+    const { view, host } = editor('top\n- one\n* two\n1. three');
+    const lines = () => [...host.querySelectorAll('.cm-line')].map((l) => l.textContent);
+    expect(lines()).toEqual(['top', '• one', '• two', '1. three']);
+    view.dispatch({ selection: { anchor: view.state.doc.line(2).to } });
+    expect(lines()).toEqual(['top', '- one', '• two', '1. three']);
   });
 });

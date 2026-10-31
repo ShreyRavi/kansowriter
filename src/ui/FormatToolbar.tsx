@@ -48,15 +48,17 @@ interface Props {
   variant: 'bar' | 'dock';
   formats: ActiveFormats;
   disabled: boolean;
-  /** apply a format to the editor (the shell hands focus back to the text) */
-  run(id: FormatId): void;
+  /** apply a format to the editor (the shell hands focus back to the text); `set` for the style menu (never toggles off) */
+  run(id: FormatId, mode?: 'set'): void;
+  /** hand focus back to the text (a mouse-opened menu closed with Esc) */
+  focusText(): void;
 }
 
 /** a press that isn't a pointer's: Enter / Space on a focused button (or a screen reader's click) */
 const fromKeyboard = (e: MouseEvent) => e.detail === 0;
 const keep = (e: MouseEvent) => e.preventDefault();
 
-export function FormatToolbar({ variant, formats, disabled, run }: Props) {
+export function FormatToolbar({ variant, formats, disabled, run, focusText }: Props) {
   const mac = isMac();
   const rootRef = useRef<HTMLDivElement>(null);
   const [current, setCurrent] = useState(0);
@@ -68,6 +70,23 @@ export function FormatToolbar({ variant, formats, disabled, run }: Props) {
   useEffect(() => {
     if (disabled) setMenu(null);
   }, [disabled]);
+
+  // the dock's row scrolls sideways: its edges fade where there is more to scroll to
+  const [fade, setFade] = useState('');
+  const measure = () => {
+    const el = rootRef.current;
+    if (!el || variant !== 'dock') return;
+    const left = el.scrollLeft > 1;
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+    setFade(`${left ? ' fade-left' : ''}${right ? ' fade-right' : ''}`);
+  };
+  useLayoutEffect(() => {
+    measure();
+    if (variant !== 'dock') return;
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [variant]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const all = items();
@@ -90,12 +109,13 @@ export function FormatToolbar({ variant, formats, disabled, run }: Props) {
     <>
       <div
         ref={rootRef}
-        className={`format-bar ${variant}`}
+        className={`format-bar ${variant}${fade}`}
         role="toolbar"
         aria-label="Formatting"
         aria-disabled={disabled || undefined}
         onMouseDown={keep}
         onKeyDown={onKeyDown}
+        onScroll={measure}
       >
         <button
           ref={menuBtn}
@@ -152,11 +172,12 @@ export function FormatToolbar({ variant, formats, disabled, run }: Props) {
           mac={mac}
           onPick={(id) => {
             setMenu(null);
-            run(id);
+            run(id, 'set');
           }}
-          onClose={(refocus) => {
+          onClose={(to) => {
             setMenu(null);
-            if (refocus) menuBtn.current?.focus();
+            if (to === 'button') menuBtn.current?.focus();
+            else if (to === 'text') focusText();
           }}
         />
       )}
@@ -171,7 +192,8 @@ interface MenuProps {
   keyboard: boolean;
   mac: boolean;
   onPick(id: Paragraph): void;
-  onClose(refocus: boolean): void;
+  /** where focus goes: the menu's button (opened by keyboard), the text (opened by pointer), or stays */
+  onClose(to: 'button' | 'text' | null): void;
 }
 
 /** The paragraph style menu (menuitemradio). Fixed to its button, so the dock's scrolling row can't clip it. */
@@ -190,28 +212,36 @@ function StyleMenu({ anchor, up, value, keyboard, mac, onPick, onClose }: MenuPr
     ref.current?.querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
   }, [keyboard, pos]);
 
+  // closed by a press elsewhere, a resize, or Esc wherever focus is (a pointer-opened menu leaves it in the text)
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
   useEffect(() => {
     const away = (e: Event) => {
-      if (!ref.current?.contains(e.target as Node) && !anchor?.contains(e.target as Node)) onClose(false);
+      if (!ref.current?.contains(e.target as Node) && !anchor?.contains(e.target as Node)) closeRef.current(null);
+    };
+    const resized = () => closeRef.current(null);
+    const esc = (e: globalThis.KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeRef.current(keyboard ? 'button' : 'text');
     };
     document.addEventListener('mousedown', away, true);
     document.addEventListener('touchstart', away, { capture: true, passive: true });
-    window.addEventListener('resize', away);
+    document.addEventListener('keydown', esc, true);
+    window.addEventListener('resize', resized);
     return () => {
       document.removeEventListener('mousedown', away, true);
       document.removeEventListener('touchstart', away, true);
-      window.removeEventListener('resize', away);
+      document.removeEventListener('keydown', esc, true);
+      window.removeEventListener('resize', resized);
     };
-  }, [anchor, onClose]);
+  }, [anchor, keyboard]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const all = [...(ref.current?.querySelectorAll<HTMLElement>('[role="menuitemradio"]') ?? [])];
     const at = all.indexOf(document.activeElement as HTMLElement);
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      e.stopPropagation();
-      onClose(true);
-    } else if (e.key === 'Tab') onClose(false);
+    if (e.key === 'Tab') onClose(null);
     else if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || e.key === 'Home' || e.key === 'End') {
       e.preventDefault();
       const n = all.length;
@@ -241,7 +271,14 @@ function StyleMenu({ anchor, up, value, keyboard, mac, onPick, onClose }: MenuPr
           className={`style-item ${p.id}`}
           onClick={() => onPick(p.id)}
         >
-          <span className="style-name">{p.label}</span>
+          <span className="style-name">
+            {p.label}
+            {p.id === value && (
+              <span className="style-check" aria-hidden="true">
+                {' ✓'}
+              </span>
+            )}
+          </span>
           <span className="key" aria-hidden="true">
             {shortcutLabel(p.id, mac)}
           </span>

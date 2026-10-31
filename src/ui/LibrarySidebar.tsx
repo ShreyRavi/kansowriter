@@ -69,10 +69,24 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
         <div className="top">
           <span>Drafts</span>
           <div style={{ display: 'flex', gap: 2 }}>
-            <button type="button" className="icon-btn" aria-label="New draft" onClick={() => onNew()}>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="New draft"
+              data-tip="New draft"
+              data-tip-align="end"
+              onClick={() => onNew()}
+            >
               <PlusIcon />
             </button>
-            <button type="button" className="icon-btn" aria-label="Close drafts" onClick={onClose}>
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="Close drafts"
+              data-tip="Close Esc"
+              data-tip-align="end"
+              onClick={onClose}
+            >
               <CloseIcon />
             </button>
           </div>
@@ -92,7 +106,14 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
             autoComplete="off"
           />
           {q && (
-            <button type="button" className="icon-btn clear" aria-label="Clear search" onClick={() => setQ('')}>
+            <button
+              type="button"
+              className="icon-btn clear"
+              aria-label="Clear search"
+              data-tip="Clear search"
+              data-tip-align="end"
+              onClick={() => setQ('')}
+            >
               <CloseIcon />
             </button>
           )}

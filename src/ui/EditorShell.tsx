@@ -30,7 +30,7 @@ import { CloseIcon, EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, Searc
 import { setUnsavedProvider } from './unsaved';
 import { useScrollLock } from './scrollLock';
 import { useDialog } from './useDialog';
-import { activeFormats, NO_FORMATS, sameFormats, type ActiveFormats } from '../editor/format';
+import { activeFormats, NO_FORMATS, sameFormats, setParagraphCommand, type ActiveFormats } from '../editor/format';
 import { SHORTCUTS, type FormatId } from '../editor/keys';
 import { FormatToolbar } from './FormatToolbar';
 
@@ -109,7 +109,14 @@ function SendLoading({ onClose }: { onClose(): void }) {
     <div className="send-wrap" role="dialog" aria-modal="true" aria-labelledby="send-title" ref={ref}>
       <div className="send-top ui">
         <h2 id="send-title">Send as letter</h2>
-        <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Close"
+          data-tip={`Close Esc · ${isMac() ? '⌘' : 'Ctrl '}⇧L`}
+          data-tip-align="end"
+          onClick={onClose}
+        >
           <CloseIcon />
         </button>
       </div>
@@ -680,13 +687,16 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   );
 
   // ---------- formatting toolbar ----------
-  const runFormat = useCallback((id: FormatId) => {
+  const runFormat = useCallback((id: FormatId, mode?: 'set') => {
     const view = viewRef.current;
     if (!view || view.state.readOnly) return;
-    SHORTCUTS[id].run(view);
+    // the style menu sets a paragraph style; buttons toggle like their shortcuts
+    if (mode === 'set' && (id === 'title' || id === 'heading' || id === 'subheading' || id === 'normal')) setParagraphCommand(id)(view);
+    else SHORTCUTS[id].run(view);
     // the text again (a keyboard press from the toolbar, or a click while the text wasn't focused)
     if (!view.hasFocus) view.focus();
   }, []);
+  const focusText = useCallback(() => viewRef.current?.focus(), []);
   // the dock shows while the text (or the dock itself) has focus
   useEffect(() => {
     if (!docked) return;
@@ -805,14 +815,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           </button>
           <span className="title">{title || 'Untitled'}</span>
         </div>
-        {!docked && <FormatToolbar variant="bar" formats={formats} disabled={!canFormat} run={runFormat} />}
+        {!docked && <FormatToolbar variant="bar" formats={formats} disabled={!canFormat} run={runFormat} focusText={focusText} />}
         <div className="right">
           <button
             type="button"
             className="icon-btn hide-phone"
             aria-label={settings.focus === 'off' ? 'Turn on focus mode' : 'Turn off focus mode'}
             aria-keyshortcuts={`${modKey}+Shift+P`}
-            data-tip={`Focus mode ${modLabel}⇧P`}
+            data-tip={`Focus mode: ${settings.focus === 'off' ? 'off' : 'on'} ${modLabel}⇧P`}
             aria-pressed={settings.focus !== 'off'}
             onClick={() => update({ focus: settings.focus === 'off' ? 'paragraph' : 'off' })}
           >
@@ -970,7 +980,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
 
       {showDock && (
         <div className="format-dock ui" ref={dockRef} role="region" aria-label="Formatting">
-          <FormatToolbar variant="dock" formats={formats} disabled={!canFormat} run={runFormat} />
+          <FormatToolbar variant="dock" formats={formats} disabled={!canFormat} run={runFormat} focusText={focusText} />
         </div>
       )}
       {sidebar && (

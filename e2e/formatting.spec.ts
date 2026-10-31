@@ -3,7 +3,7 @@
 // fades with the chrome. Phones: a row docked above the on-screen keyboard while the text has focus.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { decodeTestLetter, mod, readerPath, runCommand, settle, startWriting, write } from './helpers';
+import { decodeTestLetter, encodeTestLetter, mod, openDrafts, readerPath, runCommand, settle, startWriting, write } from './helpers';
 
 const isMobile = (page: Page) => page.viewportSize()!.width < 640;
 
@@ -37,7 +37,7 @@ async function press(page: Page, button: Locator) {
 async function pickStyle(page: Page, name: string) {
   const bar = await toolbar(page);
   await press(page, bar.getByRole('button', { name: /^Paragraph style/ }));
-  await press(page, page.getByRole('menuitemradio', { name }));
+  await press(page, page.getByRole('menuitemradio', { name, exact: true }));
   await expect(page.getByRole('menu', { name: 'Paragraph style' })).toHaveCount(0);
 }
 
@@ -60,7 +60,7 @@ test.describe('formatting toolbar', () => {
     expect(await page.evaluate(() => window.scrollY)).toBe(scrolled);
 
     await press(page, bar.getByRole('button', { name: 'Italic' }));
-    expect(await shownText(page)).toBe('Hello ***world***');
+    expect(await shownText(page)).toBe('Hello **_world_**'); // underscores: a "*" never glues onto the "**"
     await press(page, bar.getByRole('button', { name: 'Italic' }));
     await press(page, bar.getByRole('button', { name: 'Underline' }));
     expect(await shownText(page)).toBe('Hello **<u>world</u>**');
@@ -81,9 +81,12 @@ test.describe('formatting toolbar', () => {
     expect(await shownText(page)).toBe('1. Hello world');
     await press(page, bar.getByRole('button', { name: 'Checklist' }));
     expect(await shownText(page)).toBe('- [ ] Hello world');
+    // a quote holds the list item rather than replacing it
     await press(page, bar.getByRole('button', { name: 'Quote' }));
-    expect(await shownText(page)).toBe('> Hello world');
+    expect(await shownText(page)).toBe('> - [ ] Hello world');
     await press(page, bar.getByRole('button', { name: 'Quote' }));
+    expect(await shownText(page)).toBe('- [ ] Hello world');
+    await press(page, bar.getByRole('button', { name: 'Checklist' }));
     expect(await shownText(page)).toBe('Hello world');
 
     // the style menu shows the caret line's style
@@ -139,9 +142,12 @@ test.describe('formatting toolbar', () => {
       [`${m}+Enter`, '- [ ] Hello world'],
       [`${m}+Shift+Digit9`, 'Hello world'],
       [`${m}+'`, '> Hello world'],
+      [`${m}+Shift+Digit1`, '> # Hello world'],
+      [`${m}+Shift+h`, '> ## Hello world'],
+      [mac ? `${m}+Shift+j` : `${m}+Shift+g`, '> ### Hello world'],
+      [mac ? `${m}+Shift+j` : `${m}+Shift+g`, '> Hello world'],
+      [`${m}+'`, 'Hello world'],
       [`${m}+Shift+Digit1`, '# Hello world'],
-      [`${m}+Shift+h`, '## Hello world'],
-      [mac ? `${m}+Shift+j` : `${m}+Shift+g`, '### Hello world'],
       [`${m}+Shift+b`, 'Hello world'],
     ];
     for (const [key, text] of steps) {
@@ -313,6 +319,16 @@ test.describe('formatting toolbar', () => {
     // every control is a full 44px target; the row scrolls sideways, never the page
     for (const b of await dock.getByRole('button').all()) expect((await b.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    // the row's far edge fades while there is more to scroll to, the near edge once scrolled
+    const row = dock.getByRole('toolbar');
+    const scrollable = await row.evaluate((el) => el.scrollWidth > el.clientWidth);
+    if (scrollable) {
+      await expect(row).toHaveClass(/fade-right/);
+      await row.evaluate((el) => el.scrollTo({ left: el.scrollWidth }));
+      await expect(row).toHaveClass(/fade-left/);
+      await expect(row).not.toHaveClass(/fade-right/);
+      await row.evaluate((el) => el.scrollTo({ left: 0 }));
+    }
     await press(page, dock.getByRole('button', { name: 'Checklist' }));
     expect(await shownText(page)).toBe('- [ ] Hello world');
     await expect(editor).toBeFocused();
@@ -328,7 +344,7 @@ test.describe('formatting toolbar', () => {
     const tipOpacity = (l: Locator) => l.evaluate((el) => getComputedStyle(el, '::after').opacity);
     const cases: [Locator, string][] = [
       [page.getByRole('button', { name: 'Open drafts' }), 'Drafts'],
-      [page.getByRole('button', { name: /^Turn (on|off) focus mode$/ }), `Focus mode ${m}⇧P`],
+      [page.getByRole('button', { name: /^Turn (on|off) focus mode$/ }), `Focus mode: (on|off) ${m}⇧P`],
       [page.getByRole('button', { name: /^Switch to (night|paper) theme$/ }), `theme ${m}⇧N`],
       [page.getByRole('button', { name: 'Send as letter' }), `Send as letter ${m}⇧L`],
       [page.getByRole('button', { name: /^Open command palette/ }), `Command palette ${m}K`],
@@ -352,6 +368,183 @@ test.describe('formatting toolbar', () => {
     await page.keyboard.press('ArrowRight');
     await expect(italic).toBeFocused();
     await expect.poll(() => tipOpacity(italic)).toBe('1');
+  });
+
+  test('a second press ends the style for what is typed next (Notes): buttons and shortcuts', async ({ page }) => {
+    const editor = await startWriting(page);
+    const bar = await toolbar(page);
+    await write(page, editor, 'I am ');
+    await press(page, bar.getByRole('button', { name: 'Bold' }));
+    await page.keyboard.type('loud');
+    await expect(bar.getByRole('button', { name: 'Bold' })).toHaveAttribute('aria-pressed', 'true');
+    await press(page, bar.getByRole('button', { name: 'Bold' }));
+    await expect(bar.getByRole('button', { name: 'Bold' })).toHaveAttribute('aria-pressed', 'false');
+    await page.keyboard.type(' now');
+    expect(await shownText(page)).toBe('I am **loud** now');
+    if (isMobile(page)) return; // no hardware keyboard for the shortcut half
+    const m = await mod(page);
+    const cases: [string, string, string][] = [
+      ['i', '*', '*'],
+      ['u', '<u>', '</u>'],
+      ['Shift+x', '~~', '~~'],
+    ];
+    for (const [k, o, c] of cases) {
+      await page.keyboard.type(' and ');
+      await page.keyboard.press(`${m}+${k}`);
+      await page.keyboard.type('this');
+      await page.keyboard.press(`${m}+${k}`);
+      await page.keyboard.type('.');
+      expect(await shownText(page)).toMatch(new RegExp(`and ${o.replace(/[*~]/g, '\\$&')}this${c.replace(/[*~]/g, '\\$&')}\\.$`));
+    }
+  });
+
+  test('Enter continues lists, Enter on an empty item ends them, and numbered lists renumber', async ({ page }) => {
+    test.skip(
+      isMobile(page),
+      'phone emulation sends Enter as inserted text (e2e/helpers.ts write), not the Enter key the list commands take',
+    );
+    const editor = await startWriting(page);
+    const m = await mod(page);
+    await page.keyboard.press(`${m}+Shift+Digit8`);
+    await editor.pressSequentially('one');
+    await page.keyboard.press('Enter');
+    await editor.pressSequentially('two');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press('Enter'); // an empty item ends the list
+    await editor.pressSequentially('after');
+    expect(await shownText(page)).toBe('- one\n- two\nafter');
+    await page.keyboard.press('Enter');
+    await page.keyboard.press(`${m}+Shift+Digit7`);
+    await editor.pressSequentially('a');
+    for (const t of ['b', 'c']) {
+      await page.keyboard.press('Enter');
+      await editor.pressSequentially(t);
+    }
+    expect(await shownText(page)).toBe('- one\n- two\nafter\n1. a\n2. b\n3. c');
+    // delete the line "2. b": the list renumbers
+    await page.keyboard.press('ArrowUp');
+    await page.keyboard.press('End');
+    await page.keyboard.press('Shift+ArrowUp');
+    await page.keyboard.press('Shift+End');
+    await page.keyboard.press('Backspace');
+    expect(await shownText(page)).toBe('- one\n- two\nafter\n1. a\n2. c');
+    // Backspace right after a marker removes it
+    await page.keyboard.press('ArrowDown');
+    await page.keyboard.press('Home');
+    for (let i = 0; i < 3; i++) await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('Backspace');
+    expect(await shownText(page)).toBe('- one\n- two\nafter\n1. a\nc');
+    await settle(page);
+  });
+
+  test('the style menu: radio picks, Esc closes a pointer-opened menu, ✓ stays out of the name, resize closes it', async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (e) => errors.push(e.message));
+    const editor = await startWriting(page);
+    await write(page, editor, 'Head');
+    await pickStyle(page, 'Heading');
+    expect(await shownText(page)).toBe('## Head');
+    // picking the current style changes nothing
+    await pickStyle(page, 'Heading');
+    expect(await shownText(page)).toBe('## Head');
+    const bar = await toolbar(page);
+    await press(page, bar.getByRole('button', { name: /^Paragraph style/ }));
+    // the checkmark is decoration: the accessible name is just the style
+    await expect(page.getByRole('menuitemradio', { name: 'Heading', exact: true })).toHaveAttribute('aria-checked', 'true');
+    if (!isMobile(page)) {
+      await page.keyboard.press('Escape');
+      await expect(page.getByRole('menu')).toHaveCount(0);
+      await expect(editor).toBeFocused();
+      await press(page, bar.getByRole('button', { name: /^Paragraph style/ }));
+    }
+    const size = page.viewportSize()!;
+    await page.setViewportSize({ width: size.width - 20, height: size.height });
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    expect(errors).toEqual([]);
+  });
+
+  test('every icon- or symbol-only button on the main screens has a tooltip that shows on hover', async ({ page }) => {
+    test.skip(isMobile(page), 'touch screens get no tooltips (no hover)');
+    test.slow(); // five screens
+    /** visible buttons named only by aria-label or showing no word: each needs a data-tip */
+    const check = async (scope: string) => {
+      const missing = await page.evaluate((scope) => {
+        const root = document.querySelector(scope);
+        if (!root) return [`no ${scope}`];
+        return [...root.querySelectorAll('button')]
+          .filter((b) => {
+            const r = b.getBoundingClientRect();
+            if (!r.width || !r.height || getComputedStyle(b).visibility === 'hidden') return false;
+            return b.hasAttribute('aria-label') || !/[\p{L}\p{N}]{2,}/u.test(b.innerText);
+          })
+          .filter((b) => !b.dataset.tip)
+          .map((b) => b.getAttribute('aria-label') ?? b.outerHTML.slice(0, 80));
+      }, scope);
+      expect(missing, `buttons without a tooltip in ${scope}`).toEqual([]);
+      const tipped = page.locator(`${scope} button[data-tip]`);
+      for (const b of await tipped.all()) {
+        if (!(await b.isVisible())) continue;
+        await b.hover();
+        await expect
+          .poll(() => b.evaluate((el) => getComputedStyle(el, '::after').opacity), { message: (await b.getAttribute('data-tip')) ?? '' })
+          .toBe('1');
+      }
+    };
+    const editor = await startWriting(page);
+    await write(page, editor, 'Hello');
+    await toolbar(page);
+    await check('.shell');
+    await openDrafts(page);
+    await page.getByRole('searchbox', { name: 'Search drafts' }).fill('x');
+    await check('.sidebar');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.sidebar')).toHaveCount(0);
+    await page.keyboard.press(`${await mod(page)}+k`);
+    await expect(page.getByRole('dialog', { name: 'Command palette' })).toBeVisible();
+    await check('.palette');
+    await page.keyboard.press('Escape');
+    await editor.click();
+    await page.keyboard.press(`${await mod(page)}+Shift+L`);
+    await expect(page.getByRole('dialog', { name: 'Send as letter' })).toBeVisible();
+    await check('.send-wrap');
+    await page.keyboard.press('Escape');
+    const letter = await encodeTestLetter({ v: 1, baseText: '', ops: [[0, 30_000, 'One line.']] });
+    await page.goto(`/l#${letter}`);
+    await expect(page.getByRole('textbox', { name: 'Letter' })).toBeVisible();
+    await page.mouse.move(10, 10);
+    await page.mouse.move(60, 60);
+    await check('body');
+  });
+
+  test('focus mode: the button shows a clear on-state, says its state, and the dimming is visible', async ({ page }) => {
+    test.skip(isMobile(page), 'the focus button is hidden on phones (hide-phone); the palette toggles it there');
+    const editor = await startWriting(page);
+    await write(page, editor, 'First paragraph.\n\nSecond paragraph.');
+    await toolbar(page);
+    const button = page.getByRole('button', { name: /focus mode$/ });
+    const m = (await mod(page)) === 'Meta' ? '⌘' : 'Ctrl ';
+    const look = () => button.evaluate((el) => `${getComputedStyle(el).backgroundColor}|${getComputedStyle(el).color}`);
+    // on by default (paragraph): pressed, other paragraphs dimmed
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await expect(button).toHaveAttribute('data-tip', `Focus mode: on ${m}⇧P`);
+    await expect(page.locator('.cm-dim').first()).toBeAttached();
+    const dim = await page
+      .locator('.cm-dim')
+      .first()
+      .evaluate((el) => getComputedStyle(el).color);
+    const ink = await editor.evaluate((el) => getComputedStyle(el).color);
+    expect(dim).not.toBe(ink);
+    await page.mouse.move(5, 700);
+    const on = await look();
+    await button.click();
+    await expect(button).toHaveAttribute('aria-pressed', 'false');
+    await expect(button).toHaveAttribute('data-tip', `Focus mode: off ${m}⇧P`);
+    await expect(page.locator('.cm-dim')).toHaveCount(0);
+    await page.mouse.move(5, 700);
+    expect(await look()).not.toBe(on);
+    await button.click();
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.cm-dim').first()).toBeAttached();
   });
 
   test('the toolbar, its menu and the phone dock pass axe', async ({ page }) => {

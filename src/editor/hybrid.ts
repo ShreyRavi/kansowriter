@@ -55,11 +55,13 @@ class CheckboxWidget extends WidgetType {
   constructor(
     readonly checked: boolean,
     readonly label: string,
+    /** part of the identity: a tab turning read-only (or writable) redraws its boxes */
+    readonly readOnly: boolean,
   ) {
     super();
   }
   eq(o: CheckboxWidget) {
-    return o.checked === this.checked && o.label === this.label;
+    return o.checked === this.checked && o.label === this.label && o.readOnly === this.readOnly;
   }
   toDOM(view: EditorView) {
     const box = document.createElement('span');
@@ -68,7 +70,7 @@ class CheckboxWidget extends WidgetType {
     box.setAttribute('aria-checked', String(this.checked));
     box.setAttribute('aria-label', this.label);
     box.tabIndex = -1;
-    if (view.state.readOnly) box.setAttribute('aria-readonly', 'true');
+    if (this.readOnly) box.setAttribute('aria-readonly', 'true');
     const toggle = () => {
       if (view.state.readOnly) return;
       const spec = toggleCheckAt(view.state, view.posAtDOM(box));
@@ -92,8 +94,21 @@ class CheckboxWidget extends WidgetType {
   }
 }
 
+class BulletWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const s = document.createElement('span');
+    s.className = 'cm-listmark cm-bullet';
+    s.textContent = '•';
+    return s;
+  }
+}
+const bullet = Decoration.replace({ widget: new BulletWidget() });
+
 const taskLabel = (text: string) => {
-  const t = text.replace(/^[ \t]*[-*+][ \t]+\[[ xX]\][ \t]*/, '').trim();
+  const t = text.replace(/^(?:[ \t]{0,3}>[ \t]?)*[ \t]*[-*+][ \t]+\[[ xX]\][ \t]*/, '').trim();
   return t ? (t.length > 80 ? `${t.slice(0, 79)}…` : t) : 'Checklist item';
 };
 
@@ -163,7 +178,7 @@ function build(view: EditorView): DecorationSet {
           if (checked) items.push({ from: line.from, to: line.from, deco: taskDone, line: true });
           if (!onActive) {
             const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
-            const widget = Decoration.replace({ widget: new CheckboxWidget(checked, taskLabel(line.text)) });
+            const widget = Decoration.replace({ widget: new CheckboxWidget(checked, taskLabel(line.text), state.readOnly) });
             items.push({ from: node.from, to: end, deco: widget, replace: true });
           }
         } else if (name === 'InlineCode') items.push({ from: node.from, to: node.to, deco: mark('cm-code') });
@@ -182,6 +197,9 @@ function build(view: EditorView): DecorationSet {
           if (!onActive && node.node.parent?.getChild('Task')) {
             const end = state.doc.sliceString(node.to, node.to + 1) === ' ' ? node.to + 1 : node.to;
             items.push({ from: node.from, to: end, deco: hide });
+          } else if (!onActive && node.node.parent?.parent?.name === 'BulletList') {
+            // a bullet off the caret line is drawn as a bullet; the "-" / "*" / "+" comes back on the caret line
+            items.push({ from: node.from, to: node.to, deco: bullet, replace: true });
           } else items.push({ from: node.from, to: node.to, deco: mark('cm-listmark') });
         }
         return undefined;
@@ -220,7 +238,8 @@ export const hybridMarkdown = ViewPlugin.fromClass(
         u.selectionSet ||
         u.viewportChanged ||
         syntaxTree(u.startState) !== syntaxTree(u.state) ||
-        u.startState.facet(revealSyntax) !== u.state.facet(revealSyntax)
+        u.startState.facet(revealSyntax) !== u.state.facet(revealSyntax) ||
+        u.startState.readOnly !== u.state.readOnly
       ) {
         this.decorations = build(u.view);
       }

@@ -14,6 +14,9 @@
   --type-landing: 30px;
   --type-wordmark: 17px;
   --type-open-file: 17px;
+  --type-heading1: 1.62em;
+  --type-heading2: 1.3em;
+  --type-heading3: 1.15em;
   --type-line-serif: 1.7;
   --type-line-sans: 1.65;
   --type-line-mono: 1.6;
@@ -47,6 +50,7 @@
   --c-surface: #FBF8F1;
   --c-ink: #272320;
   --c-muted: #6E655B;
+  --c-dim: #756B5F;
   --c-hairline: #E3DACB;
   --c-track: #E9E2D4;
   --c-selected: #EFE9DC;
@@ -61,6 +65,7 @@
   --c-surface: #23201D;
   --c-ink: #E8E1D5;
   --c-muted: #A39A8E;
+  --c-dim: #8A8176;
   --c-hairline: #2E2A26;
   --c-track: #2E2A26;
   --c-selected: #2A2622;

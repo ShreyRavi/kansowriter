@@ -14,7 +14,8 @@ import {
   type InlineStyle,
   type LineStyle,
 } from './format';
-import { shortcutLabel } from './keys';
+import { formatKeymap, shortcutLabel } from './keys';
+import { renumberOnEdit } from './format';
 
 /** "^" is a caret; "{…}" a selection (anchor at "{", head at "}"); "}…{" a backwards one */
 function make(src: string, extra: Extension = []): EditorState {
@@ -73,7 +74,9 @@ describe('line styles', () => {
     expect(parsePrefix('---').kind).toBe(null);
     expect(parsePrefix('*em*').kind).toBe(null);
     expect(parsePrefix('12) x')).toMatchObject({ kind: 'numbered', num: 12 });
-    expect(parsePrefix('> q').kind).toBe('quote');
+    expect(parsePrefix('> q')).toMatchObject({ kind: null, quote: '> ' });
+    expect(parsePrefix('> - [ ] q')).toMatchObject({ kind: 'check', quote: '> ', end: 8 });
+    expect(parsePrefix('- - q')).toMatchObject({ kind: 'bullet', end: 4 });
   });
 
   it('applies and removes each style on the caret line', () => {
@@ -101,7 +104,8 @@ describe('line styles', () => {
     expect(line('1. Hello^', 'bullet')).toBe('- Hello^');
     expect(line('- Hello^', 'check')).toBe('- [ ] Hello^');
     expect(line('# Hello^', 'heading')).toBe('## Hello^');
-    expect(line('> Hello^', 'title')).toBe('# Hello^');
+    // a quote is a container: what it holds changes, the quote stays
+    expect(line('> Hello^', 'title')).toBe('> # Hello^');
     expect(line('## Hello^', 'bullet')).toBe('- Hello^');
     // nesting stays when a list item becomes another kind of list item
     expect(line('  - Hello^', 'numbered')).toBe('  1. Hello^');
@@ -135,6 +139,9 @@ describe('line styles', () => {
     expect(line('5. a\nb^', 'numbered')).toBe('5. a\n6. b^');
     // nested lines don't break the run
     expect(line('1. a\n   - sub\nb^', 'numbered')).toBe('1. a\n   - sub\n2. b^');
+    // a loose list (blank lines between items) counts on
+    expect(line('{one\n\ntwo\nthree}', 'numbered')).toBe('{1. one\n\n2. two\n3. three}');
+    expect(line('1. a\n\n2. b\n\nc^', 'numbered')).toBe('1. a\n\n2. b\n\n3. c^');
   });
 
   it('works on lines holding surrogate pairs', () => {
@@ -183,8 +190,9 @@ describe('inline styles', () => {
     expect(inline('a <u>^</u>b', 'underline')).toBe('a ^b');
     expect(inline('a ~~^~~b', 'strike')).toBe('a ^b');
     expect(inline('a *^*b', 'italic')).toBe('a ^b');
-    // bold then italic nests; italic off again leaves the bold pair
-    expect(inline('a **^**b', 'italic')).toBe('a ***^***b');
+    // bold then italic nests (underscores, so it never glues onto the "**"); italic off again leaves the bold pair
+    expect(inline('a **^**b', 'italic')).toBe('a **_^_**b');
+    expect(inline('a **_^_**b', 'italic')).toBe('a **^**b');
     expect(inline('a ***^***b', 'italic')).toBe('a **^**b');
     // a caret inside a styled word turns that span off
     expect(inline('a **wo^rd** b', 'bold')).toBe('a wo^rd b');
@@ -199,8 +207,19 @@ describe('inline styles', () => {
     expect(inline('😀^😀', 'italic')).toBe('😀*^*😀');
   });
 
-  it('leaves code alone when looking for underline tags', () => {
-    expect(inline('`<u>{x}</u>`', 'underline')).toBe('`<u><u>{x}</u></u>`');
+  it('never formats inside code', () => {
+    expect(inline('`<u>{x}</u>`', 'underline')).toBe('`<u>{x}</u>`');
+    expect(toggleInline(make('`co{de}`'), 'bold')).toBeNull();
+    expect(toggleInline(make('`co^de`'), 'bold')).toBeNull();
+    expect(toggleInline(make('```\nco{de}\n```'), 'bold')).toBeNull();
+    expect(toggleInline(make('```\nco^de\n```'), 'italic')).toBeNull();
+    expect(setLineStyle(make('```\nco^de\n```'), 'title')).toBeNull();
+    expect(setLineStyle(make('    indented^ code'), 'bullet')).toBeNull();
+    // just past a closing backtick still formats
+    expect(inline('`code` ^', 'bold')).toBe('`code` **^**');
+    // a selection over code and text styles only the text
+    expect(inline('{text\n```\ncode\n```}', 'bold')).toBe('**{text**\n```\ncode\n```}');
+    expect(activeFormats(make('`**x^**`')).bold).toBe(false);
   });
 
   it('handles several carets at once', () => {
@@ -302,5 +321,142 @@ describe('shortcut labels', () => {
     expect(shortcutLabel('subheading', true)).toBe('⌘⇧J');
     expect(shortcutLabel('subheading', false)).toBe('Ctrl ⇧G');
     expect(shortcutLabel('title', true)).toBe('⌘⇧1');
+  });
+});
+
+/** run a keymap command (Enter / Backspace) on a state, the way a view would */
+function key(src: string, name: string, extra: Extension = []): string {
+  let s = make(src, extra);
+  const binding = formatKeymap.find((b) => b.key === name)!;
+  const view = {
+    get state() {
+      return s;
+    },
+    dispatch: (spec: TransactionSpec) => (s = s.update(spec).state),
+  };
+  const handled = binding.run!(view as never);
+  return handled ? show(s) : '(not handled)';
+}
+
+describe('review fixes', () => {
+  it('a second press with the caret at a span edge steps out (Notes): ⌘B loud ⌘B now', () => {
+    // typed: "I am " ⌘B "loud" ⌘B " now"
+    let s = make('I am ^');
+    s = step(s, toggleInline(s, 'bold'));
+    s = s.update({ changes: { from: s.selection.main.head, insert: 'loud' }, selection: { anchor: s.selection.main.head + 4 } }).state;
+    s = step(s, toggleInline(s, 'bold'));
+    s = s.update({ changes: { from: s.selection.main.head, insert: ' now' }, selection: { anchor: s.selection.main.head + 4 } }).state;
+    expect(show(s)).toBe('I am **loud** now^');
+    for (const [style, o, c] of [
+      ['italic', '*', '*'],
+      ['underline', '<u>', '</u>'],
+      ['strike', '~~', '~~'],
+    ] as const) {
+      expect(inline(`a ${o}loud^${c} b`, style)).toBe(`a ${o}loud${c}^ b`);
+      expect(inline(`a ${o}^loud${c} b`, style)).toBe(`a ^${o}loud${c} b`);
+    }
+    expect(inline('a **^loud** b', 'bold')).toBe('a ^**loud** b');
+  });
+
+  it('a caret just outside a span steps in instead of stacking delimiters; a second press undoes it', () => {
+    expect(inline('**bold**^ x', 'bold')).toBe('**bold^** x');
+    expect(inline('**bold^** x', 'bold')).toBe('**bold**^ x');
+    expect(inline('x ^**bold**', 'bold')).toBe('x **^bold**');
+    expect(inline('*it*^', 'italic')).toBe('*it^*');
+    // a different style next to a "*" run uses underscores, and a second press removes them
+    expect(inline('*it*^', 'bold')).toBe('*it*__^__');
+    expect(inline('*it*__^__', 'bold')).toBe('*it*^');
+    expect(inline('**b**^', 'italic')).toBe('**b**_^_');
+    expect(inline('**b**_^_', 'italic')).toBe('**b**^');
+  });
+
+  it('nested containers: inline styles skip "> - " and line styles keep the quote', () => {
+    expect(inline('{> - item}', 'bold')).toBe('{> - **item}**');
+    expect(line('> - item^', 'bullet')).toBe('> item^');
+    expect(line('> - item^', 'numbered')).toBe('> 1. item^');
+    expect(line('> item^', 'quote')).toBe('item^');
+    expect(line('- item^', 'quote')).toBe('> - item^');
+    expect(line('> - [ ] item^', 'normal')).toBe('> item^');
+    expect(activeFormats(make('> - item^'))).toMatchObject({ bullet: true, quote: true, numbered: false });
+    expect(activeFormats(make('> ## Head^'))).toMatchObject({ paragraph: 'heading', quote: true });
+    expect(show(step(make('> - [ ] a^'), toggleChecks(make('> - [ ] a^'))))).toBe('> - [x] a^');
+    expect(inline('- - {deep}', 'italic')).toBe('- - *{deep}*');
+    expect(inline('{- > q}', 'bold')).toBe('{- > **q}**');
+  });
+
+  it('removing a heading drops its closing "#"s', () => {
+    expect(line('# Title #^', 'title')).toBe('Title^');
+    expect(line('## Title ##^', 'normal')).toBe('Title^');
+    expect(line('# Title ###^', 'bullet')).toBe('- Title^');
+    // heading to heading keeps them
+    expect(line('# Title #^', 'heading')).toBe('## Title #^');
+    expect(line('# C# ^', 'normal')).toBe('C# ^');
+  });
+
+  it('Enter continues lists and quotes; Enter on an empty item ends the list', () => {
+    expect(key('- one^', 'Enter')).toBe('- one\n- ^');
+    expect(key('1. one^\n2. two', 'Enter')).toBe('1. one\n2. ^\n3. two');
+    expect(key('- [x] one^', 'Enter')).toBe('- [x] one\n- [ ] ^');
+    expect(key('> one^', 'Enter')).toBe('> one\n> ^');
+    expect(key('- one\n- ^', 'Enter')).toBe('- one\n^');
+    expect(key('1. one\n2. ^', 'Enter')).toBe('1. one\n^');
+    expect(key('> - ^', 'Enter')).toBe('> ^');
+    expect(key('> ^', 'Enter')).toBe('^');
+    expect(key('plain^', 'Enter')).toBe('(not handled)');
+  });
+
+  it('Backspace at the start of an empty item removes its marker', () => {
+    expect(key('- one\n- ^', 'Backspace')).toBe('- one\n^');
+    expect(key('- [ ] ^', 'Backspace')).toBe('^');
+    expect(key('> ^', 'Backspace')).toBe('^');
+    expect(key('> - ^', 'Backspace')).toBe('> ^');
+    // right after a marker with text: the marker goes, the text stays; numbering restarts after it
+    expect(key('1. a\n2. ^b\n3. c', 'Backspace')).toBe('1. a\n^b\n1. c');
+    expect(key('- ab^', 'Backspace')).toBe('(not handled)');
+  });
+
+  it('numbered lists renumber after ordinary line edits, in the same transaction', () => {
+    let s = make('1. a\n2. b\n3. c^', [renumberOnEdit, history()]);
+    // delete the line "2. b"
+    const l2 = s.doc.line(2);
+    const tr = s.update({ changes: { from: l2.from - 1, to: l2.to }, userEvent: 'delete' });
+    s = tr.state;
+    expect(s.doc.toString()).toBe('1. a\n2. c');
+    // one recorded change, one undo step
+    expect(applyKop('1. a\n2. b\n3. c', [0, 0, ...runsFromTransaction(tr)])).toBe('1. a\n2. c');
+    undo({ state: s, dispatch: (t) => (s = t.state) });
+    expect(s.doc.toString()).toBe('1. a\n2. b\n3. c');
+    // a list keeps the number it starts with
+    let t = make('5. a\n6. b\n7. c', [renumberOnEdit]);
+    t = t.update({ changes: { from: t.doc.line(2).from - 1, to: t.doc.line(2).to }, userEvent: 'delete' }).state;
+    expect(t.doc.toString()).toBe('5. a\n6. c');
+    // typing within a line never renumbers (the writer may be changing the number itself)
+    let u = make('1. a\n2. b', [renumberOnEdit]);
+    u = u.update({ changes: { from: u.doc.line(2).from, to: u.doc.line(2).from + 1, insert: '9' }, userEvent: 'input.type' }).state;
+    expect(u.doc.toString()).toBe('1. a\n9. b');
+  });
+
+  it('unstyling part of a span splits it', () => {
+    expect(inline('**very bold {words}**', 'bold')).toBe('**very bold** {words}');
+    expect(inline('**{very} bold words**', 'bold')).toBe('{very} **bold words**');
+    expect(inline('**very {bold} words**', 'bold')).toBe('**very** {bold} **words**');
+    expect(inline('aa **{bb} cc** dd', 'bold')).toBe('aa {bb} **cc** dd');
+    expect(inline('<u>one {two}</u>', 'underline')).toBe('<u>one</u> {two}');
+    expect(inline('__very {bold}__', 'bold')).toBe('__very__ {bold}');
+    // nested markers around the text don't count as text: italic off "***x***" leaves the bold
+    expect(inline('***{bold italic}***', 'italic')).toBe('**{bold italic}**');
+    expect(inline('***{bold italic}***', 'bold')).toBe('*{bold italic}*');
+    // documented: merging drops inner same-style markers, so bold-all then unbold-all gives plain text
+    const s1 = step(make('{a **b** c}'), toggleInline(make('{a **b** c}'), 'bold'));
+    expect(show(s1)).toBe('**{a b c}**');
+    expect(show(step(s1, toggleInline(s1, 'bold')))).toBe('{a b c}');
+  });
+
+  it('the style menu sets: picking the current style changes nothing', () => {
+    expect(setLineStyle(make('## Head^'), 'heading', false)).toBeNull();
+    expect(show(step(make('Head^'), setLineStyle(make('Head^'), 'heading', false)))).toBe('## Head^');
+    expect(show(step(make('# Head^'), setLineStyle(make('# Head^'), 'heading', false)))).toBe('## Head^');
+    // the shortcut still toggles
+    expect(line('## Head^', 'heading')).toBe('Head^');
   });
 });

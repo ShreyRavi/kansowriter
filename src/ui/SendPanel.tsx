@@ -21,7 +21,7 @@ import { CloseIcon } from './icons';
 import { CopyLink } from './CopyLink';
 import { Replay } from './Replay';
 import { letterLink } from './letterLinks';
-import { download, safeFileName } from './platform';
+import { download, isMac, safeFileName } from './platform';
 
 interface Source {
   record: DraftRecord;
@@ -194,7 +194,14 @@ export function SendPanel({
     <div className="send-wrap" role="dialog" aria-modal="true" aria-labelledby="send-title" ref={ref}>
       <div className="send-top ui">
         <h2 id="send-title">Send as letter</h2>
-        <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Close"
+          data-tip={`Close Esc · ${isMac() ? '⌘' : 'Ctrl '}⇧L`}
+          data-tip-align="end"
+          onClick={onClose}
+        >
           <CloseIcon />
         </button>
       </div>

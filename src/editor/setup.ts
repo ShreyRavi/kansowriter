@@ -3,6 +3,7 @@ import { EditorView, keymap, placeholder as placeholderExt } from '@codemirror/v
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { hybridMarkdown, writingLanguage } from './hybrid';
 import { formatKeymap } from './keys';
+import { renumberOnEdit } from './format';
 import { focusMode, setFocusMode, type FocusMode } from './focus';
 import { notRecorded, recorder } from './recorder';
 import type { Change } from '../storage/writer';
@@ -62,6 +63,7 @@ export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView 
       keymap.of([...formatKeymap, ...defaultKeymap, ...historyKeymap]),
       // CommonMark + strikethrough + task lists, nothing embedded (R6: text only)
       writingLanguage,
+      renumberOnEdit,
       EditorView.lineWrapping,
       hybridMarkdown,
       focusMode(o.focus),

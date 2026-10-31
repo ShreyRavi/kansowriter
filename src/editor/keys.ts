@@ -1,5 +1,15 @@
 import type { Command, KeyBinding } from '@codemirror/view';
-import { inlineCommand, lineCommand, toggleChecksCommand, type InlineStyle, type LineStyle } from './format';
+import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
+import {
+  deleteMarkerBackward,
+  endEmptyItem,
+  inlineCommand,
+  lineCommand,
+  toggleChecksCommand,
+  type InlineStyle,
+  type LineStyle,
+} from './format';
+import type { EditorState, TransactionSpec } from '@codemirror/state';
 
 /**
  * Formatting shortcuts, as in Apple Notes where they don't collide (Mod = ⌘ on Apple, Ctrl elsewhere):
@@ -11,6 +21,14 @@ import { inlineCommand, lineCommand, toggleChecksCommand, type InlineStyle, type
  * Changed from Notes: Title is ⌘⇧1, not ⌘⇧T (⌘⇧T is the app's typewriter toggle and every browser's
  * "reopen closed tab", which pages can't take). Off Apple, Subheading is Ctrl ⇧G: Ctrl ⇧J opens the
  * browser's developer console in Chrome, Edge and Firefox and can't be taken either.
+ *
+ * Headings toggle from their shortcuts (⌘⇧H on a heading makes it Normal); the style menu sets.
+ *
+ * Lists continue as in Notes: Enter on an item starts the next one ("- ", the next number,
+ * "- [ ] ", "> "; @codemirror/lang-markdown's insertNewlineContinueMarkup, which reads the same
+ * syntax tree since the writing language shares its language data). Enter on an empty item ends
+ * the list at once and Backspace right after a marker removes it (format.ts: lang-markdown would
+ * first loosen the list / leave the marker's indent). All are normal, recorded transactions.
  */
 export type FormatId = LineStyle | 'normal' | InlineStyle;
 
@@ -40,9 +58,23 @@ export const SHORTCUTS: Record<FormatId, Shortcut> = {
   strike: { key: 'Mod-Shift-x', run: inline('strike') },
 };
 
+const spec = (view: Parameters<Command>[0], f: (s: EditorState) => TransactionSpec | null) => {
+  const s = f(view.state);
+  if (s) view.dispatch(s);
+  return !!s;
+};
+
+/** editing commands only where the text can change (a read-only view falls through to the defaults) */
+const writable =
+  (c: Command): Command =>
+  (view) =>
+    !view.state.readOnly && c(view);
+
 export const formatKeymap: KeyBinding[] = [
   ...Object.values(SHORTCUTS).map(({ key, mac, run }) => ({ key, mac, run, preventDefault: true })),
   { key: 'Mod-Enter', run: toggleChecksCommand },
+  { key: 'Enter', run: writable((v) => spec(v, endEmptyItem) || insertNewlineContinueMarkup(v)) },
+  { key: 'Backspace', run: writable((v) => spec(v, deleteMarkerBackward)) },
 ];
 
 /** "⌘⇧H" / "Ctrl ⇧H": the label a tooltip or menu shows for a shortcut */
