@@ -113,8 +113,15 @@ test.describe('formatting toolbar', () => {
   test('numbered lists number every selected line and keep counting', async ({ page }) => {
     const editor = await startWriting(page);
     await write(page, editor, 'one\ntwo\nthree');
-    // the page's own modifier: ControlOrMeta follows the host OS, but an emulated iPhone is Apple (Meta) on a Linux host too
-    await page.keyboard.press(`${await mod(page)}+a`);
+    // select all through the editor itself: phones have no hardware ⌘A, and emulated iPhone WebKit on a Linux host ignores Meta+A
+    await page.evaluate(() => {
+      type View = { state: { doc: { length: number } }; dispatch(spec: { selection: { anchor: number; head: number } }): void };
+      type Tile = { root?: { view?: View }; rootView?: { view?: View }; view?: View };
+      const content = document.querySelector('.cm-content') as (HTMLElement & { cmTile?: Tile; cmView?: Tile }) | null;
+      const tile = content?.cmTile ?? content?.cmView;
+      const view = tile?.root?.view ?? tile?.rootView?.view ?? tile?.view;
+      view!.dispatch({ selection: { anchor: 0, head: view!.state.doc.length } });
+    });
     const bar = await toolbar(page);
     await press(page, bar.getByRole('button', { name: 'Numbered list' }));
     expect(await shownText(page)).toBe('1. one\n2. two\n3. three');
