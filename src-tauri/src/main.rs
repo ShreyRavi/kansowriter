@@ -12,6 +12,8 @@ use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::webview::{DownloadEvent, NewWindowResponse, PageLoadEvent};
 use tauri::{AppHandle, Manager, RunEvent, Url, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
+#[cfg(test)]
+mod build_info;
 mod default_app;
 mod files;
 mod menu;

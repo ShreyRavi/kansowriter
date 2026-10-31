@@ -3,7 +3,7 @@
 //! Close Window sends performClose:, which main.rs routes through the same save-first path. The
 //! Edit items are what make ⌘C / ⌘V / ⌘Z reach the text in a WKWebView.
 use serde::Deserialize;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Wry};
 
 pub const OPEN: &str = "open";
@@ -30,6 +30,24 @@ fn shortcuts() -> Custom {
         .custom
 }
 
+pub const SOURCE: &str = "https://github.com/ShreyRavi/kansowriter";
+
+/// Kansowriter › About: "Version 0.1.0 (1e564e8)" (the commit build.rs found) and where the
+/// source lives. macOS shows `version` with `short_version` in parentheses and ignores
+/// `website`, so the link is in `credits` too (plain text there).
+fn about(version: &str, sha: &str) -> AboutMetadata<'static> {
+    AboutMetadata {
+        name: Some("Kansowriter".into()),
+        version: Some(version.into()),
+        short_version: Some(sha.into()),
+        website: Some(SOURCE.into()),
+        website_label: Some("Source code".into()),
+        credits: Some(format!("Source code: {SOURCE}")),
+        copyright: Some("Kansoboard".into()),
+        ..Default::default()
+    }
+}
+
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let keys = shortcuts();
     let sep = || PredefinedMenuItem::separator(app);
@@ -38,7 +56,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         "Kansowriter",
         true,
         &[
-            &PredefinedMenuItem::about(app, Some("About Kansowriter"), None)?,
+            &PredefinedMenuItem::about(
+                app,
+                Some("About Kansowriter"),
+                Some(about(&app.package_info().version.to_string(), env!("KANSO_GIT_SHA"))),
+            )?,
             &sep()?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
@@ -97,6 +119,19 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn about_shows_the_version_with_the_commit_and_the_source() {
+        let a = about("0.1.0", "1e564e8");
+        assert_eq!(a.version.as_deref(), Some("0.1.0"));
+        assert_eq!(a.short_version.as_deref(), Some("1e564e8"));
+        assert_eq!(a.website.as_deref(), Some(SOURCE));
+        assert_eq!(a.website_label.as_deref(), Some("Source code"));
+        assert!(a.credits.unwrap().contains(SOURCE));
+        // this build's commit was found (or the documented fallback)
+        let sha = env!("KANSO_GIT_SHA");
+        assert!(sha == crate::build_info::UNKNOWN || (sha.len() == 7 && sha.chars().all(|c| c.is_ascii_hexdigit())));
+    }
 
     #[test]
     fn the_shortcuts_file_parses_and_open_is_cmd_o() {
