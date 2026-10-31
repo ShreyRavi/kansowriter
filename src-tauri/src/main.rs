@@ -135,20 +135,30 @@ async fn file_stat(app: AppHandle, path: String) -> Result<Option<files::Stat>, 
     files::stat(&p).map_err(|e| e.to_string())
 }
 
-/// The bytes come as the raw body; the path (percent-encoded) in the `x-kanso-path` header.
+/// The bytes come as the raw body; the path (percent-encoded) in the `x-kanso-path` header, and
+/// what the page last saw of the file in `x-kanso-expect` ("<mtime>:<size>", optional): the write
+/// is refused with "changed" if the file isn't that any more right before the rename.
 #[tauri::command]
 async fn file_write(app: AppHandle, request: Request<'_>) -> Result<files::Stat, String> {
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("bad-body".into());
     };
-    let path = request
-        .headers()
-        .get("x-kanso-path")
-        .and_then(|v| v.to_str().ok())
+    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok());
+    let path = header("x-kanso-path")
         .and_then(files::percent_decode)
         .ok_or("bad-path")?;
+    let expect = match header("x-kanso-expect") {
+        None => None,
+        Some(v) => Some(files::parse_expect(v).ok_or("bad-expect")?),
+    };
     let p = checked(&app, &path)?;
-    files::write_atomic(&p, bytes).map_err(|e| e.to_string())
+    files::write_atomic(&p, bytes, expect).map_err(|e| e.to_string())
+}
+
+/// The page let go of a file (its draft was deleted or linked elsewhere): revoke the grant.
+#[tauri::command]
+fn forget_file(app: AppHandle, path: String) {
+    with_grants(&app, |g| g.revoke(&path));
 }
 
 /// A save panel (a sheet on the window) for a Markdown file or a .kanso; the chosen path is
@@ -327,6 +337,7 @@ fn main() {
             file_read,
             file_stat,
             file_write,
+            forget_file,
             pick_save_path,
             set_default_md
         ])

@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { encodeKanso } from '../core/backup';
 import { dayKey } from '../core/words';
+import { newDraft } from '../core/draft';
 import { IndexedDbAdapter } from '../storage/idb';
 import type { EditorPort, HostPort } from '../ui/desktopBridge';
 import { createDesktopFiles, DESKTOP_KEY, LINKS_KEY, MD_NOTE, MD_NOTE_DELAY_MS, type Invoke } from './desktopFiles';
@@ -22,6 +23,8 @@ let opened: string[];
 let savePath: string | null;
 let defaultFails: boolean;
 let defaultCalls: (boolean | undefined)[];
+let forgotten: string[];
+let failWrites: boolean;
 let notices: string[];
 let host: HostPort & { open: ReturnType<typeof vi.fn<(id: string) => void>> };
 
@@ -35,7 +38,10 @@ const ops: FileOps = {
     if (!f) throw new Error('not-found');
     return f.bytes;
   },
-  write: async (p, bytes) => {
+  write: async (p, bytes, expect) => {
+    if (failWrites) throw 'io: disk full';
+    const f = disk.get(p);
+    if (expect && (!f || f.mtime !== expect.mtime || f.bytes.length !== expect.size)) throw 'changed';
     disk.set(p, { bytes, mtime: ++clock });
     return { mtime: clock, size: bytes.length };
   },
@@ -43,6 +49,7 @@ const ops: FileOps = {
 
 const invoke = (async (cmd: string, args?: Record<string, unknown>) => {
   if (cmd === 'take_opened') return opened.splice(0);
+  if (cmd === 'forget_file') return void forgotten.push(String(args?.path));
   if (cmd === 'pick_save_path') return savePath ? `${savePath}/${String(args?.name)}.${String(args?.kind)}` : null;
   if (cmd === 'set_default_md') {
     defaultCalls.push(args?.mine as boolean | undefined);
@@ -62,13 +69,14 @@ beforeEach(() => {
   savePath = '/Users/a/Documents';
   defaultFails = false;
   defaultCalls = [];
+  forgotten = [];
+  failWrites = false;
   notices = [];
   host = { storage, open: vi.fn<(id: string) => void>(), refreshDrafts: vi.fn(async () => []), broadcast: vi.fn() };
   document.body.innerHTML = '';
 });
 afterEach(() => vi.useRealTimers());
 
-const settle = () => new Promise((r) => setTimeout(r, 20));
 /** under fake timers: let IndexedDB (real macrotasks) and the timers move along together */
 async function pass(ms: number) {
   for (let t = 0; t < ms; t += 100) {
@@ -86,6 +94,7 @@ function port(draftId: string, text: string): EditorPort & { text(): string; set
     set: (x: string) => void (t = x),
     writable: () => true,
     replaceText: (x) => ((t = x), true),
+    editedSince: () => true,
     fileNotice: () => {},
     exportKanso: async () => 'Saved Draft.kanso',
   };
@@ -96,9 +105,9 @@ describe('opening Markdown files (Finder, Dock, open -a, File > Open…)', () =>
     disk.set('/Users/a/notes.md', { bytes: enc('# Notes\r\n\r\nFirst line\r\n'), mtime: 5 });
     opened.push('/Users/a/notes.md');
     const files = make();
-    void files.opened(); // Rust's nudge can come before the Router is up
+    const taken = files.opened(); // Rust's nudge can come before the Router is up
     files.attachHost(host);
-    await settle();
+    await taken;
     expect(host.open).toHaveBeenCalledOnce();
     const id = host.open.mock.calls[0]![0] as string;
     const loaded = await storage.loadDraft(id);
@@ -236,6 +245,77 @@ describe('Save to File…, the editor link and quitting', () => {
     await files.menu('save-file');
     await files.menu('save-kanso');
     expect(notices).toEqual(['Saved to Menu.md.', 'Saved Draft.kanso.']);
+  });
+});
+
+describe('links, grants and the quit', () => {
+  it('an editor attached before the links have loaded still gets its link (and sees a change made outside)', async () => {
+    // a linked draft from an earlier session
+    await storage.createDraft(newDraft('d1', 1));
+    disk.set('/Users/a/early.md', { bytes: enc('Before\n'), mtime: 7 });
+    const { hashText } = await import('./markdownFile');
+    await storage.patchSetting(LINKS_KEY, {
+      d1: {
+        path: '/Users/a/early.md',
+        eol: '\n',
+        finalNewline: true,
+        bom: false,
+        hash: hashText('Before'),
+        mtime: 7,
+        size: 7,
+        syncedAt: 1,
+      },
+    });
+    disk.set('/Users/a/early.md', { bytes: enc('Changed outside\n'), mtime: 8 });
+    const files = make();
+    const p = port('d1', 'Before');
+    // the host is attached (links still loading), then the editor attaches at once
+    files.attachHost(host);
+    files.attachEditor(p);
+    await vi.waitFor(() => expect(p.text()).toBe('Changed outside'));
+    expect(files.linkedPath('d1')).toBe('/Users/a/early.md');
+  });
+
+  it('a quit is told when a linked file couldn’t get the newest words', async () => {
+    const files = make();
+    files.attachHost(host);
+    const p = port('d1', 'Words');
+    const link = files.attachEditor(p);
+    await files.saveToFile('d1');
+    await expect(files.flush()).resolves.toBe(true);
+    failWrites = true;
+    p.set('Words, more');
+    link.changed();
+    await expect(files.flush()).resolves.toBe(false);
+    // a closing draft's failed last write counts too
+    link.dispose();
+    await expect(files.flush()).resolves.toBe(false);
+  });
+
+  it('a path no draft is linked to any more loses its grant: relinked elsewhere, or the draft deleted', async () => {
+    const files = make();
+    files.attachHost(host);
+    files.attachEditor(port('d1', 'First'));
+    await files.saveToFile('d1');
+    expect(forgotten).toEqual([]);
+    // the same draft saved to a new file: the old one is let go
+    savePath = '/Users/a/Elsewhere';
+    await files.saveToFile('d1');
+    expect(forgotten).toEqual(['/Users/a/Documents/First.md']);
+    await files.draftDeleted('d1');
+    expect(forgotten).toEqual(['/Users/a/Documents/First.md', '/Users/a/Elsewhere/First.md']);
+    expect(files.linkedPath('d1')).toBeNull();
+    expect((await links()).d1).toBeNull();
+  });
+
+  it('links of drafts deleted in an earlier session are dropped at start, with their grants', async () => {
+    await storage.patchSetting(LINKS_KEY, {
+      gone: { path: '/Users/a/old.md', eol: '\n', finalNewline: true, bom: false, hash: 'x', mtime: 1, size: 1 },
+    });
+    const files = make();
+    files.attachHost(host);
+    await vi.waitFor(() => expect(forgotten).toEqual(['/Users/a/old.md']));
+    expect(files.linkedPath('gone')).toBeNull();
   });
 });
 

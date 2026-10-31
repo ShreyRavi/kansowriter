@@ -1,8 +1,9 @@
 /**
  * A Markdown file as the editor sees it, and back. The editor works in \n line breaks with no
- * final newline of its own, so reading notes how the file was written (CRLF or LF, a final
- * newline, a byte-order mark) and writing puts each back: a file round-trips byte for byte, and
- * editing changes only the text.
+ * final newline of its own, so reading notes how the file was written (its line ending, a final
+ * newline, a byte-order mark) and writing puts each back. A file with one kind of line ending
+ * round-trips byte for byte; a file that mixes them (some CRLF, some LF, or old-Mac CR) comes
+ * back with its majority ending on every line, the one change the first save makes.
  */
 export interface FileFormat {
   eol: '\n' | '\r\n';
@@ -25,7 +26,9 @@ export function decodeMarkdown(bytes: Uint8Array): { text: string; format: FileF
     throw new NotTextError('not UTF-8');
   }
   if (raw.includes('\0')) throw new NotTextError('binary');
-  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const crlf = raw.match(/\r\n/g)?.length ?? 0;
+  const other = raw.match(/\r(?!\n)|(?<!\r)\n/g)?.length ?? 0;
+  const eol = crlf > other ? '\r\n' : '\n';
   let text = raw.replace(/\r\n?/g, '\n');
   const finalNewline = text.endsWith('\n');
   if (finalNewline) text = text.slice(0, -1);

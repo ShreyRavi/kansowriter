@@ -25,6 +25,8 @@ export interface EditorPort {
   writable(): boolean;
   /** replace the text with `text` as one recorded edit (history and replay show it); false when it can't */
   replaceText(text: string): boolean;
+  /** the draft has edits after `at` (ms): unsaved ones, or ones committed later */
+  editedSince(at: number): boolean;
   /** show or clear the file notice */
   fileNotice(notice: FileNotice | null): void;
   /** File > Save as Kansowriter File: the palette's command; the label, or null when cancelled */
@@ -63,6 +65,8 @@ export interface DesktopBridge {
   saveToFile(draftId: string): Promise<string | null>;
   /** save a .kanso through a save panel; the row label, or null when cancelled */
   saveKanso(name: string, bytes: Uint8Array): Promise<string | null>;
+  /** the draft was deleted: its link and the file's grant go */
+  draftDeleted(draftId: string): Promise<void>;
   /** make Kansowriter the default app for .md; the label to show */
   makeDefault(): Promise<string>;
 }

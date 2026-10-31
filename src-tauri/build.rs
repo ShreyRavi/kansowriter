@@ -41,6 +41,7 @@ fn main() {
             "file_read",
             "file_stat",
             "file_write",
+            "forget_file",
             "pick_save_path",
             "set_default_md",
         ])),

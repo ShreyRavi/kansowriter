@@ -91,7 +91,14 @@ export const fileOps: FileOps = {
   stat: (path) => invoke<FileStat | null>('file_stat', { path }),
   read: async (path) => new Uint8Array(await invoke<ArrayBuffer>('file_read', { path })),
   // the bytes go as the raw body (no JSON number arrays for a large .kanso); the path in a header
-  write: (path, bytes) => invoke<FileStat>('file_write', bytes, { headers: { 'x-kanso-path': encodeURIComponent(path) } }),
+  // `expect`: what the page last saw; the write is refused ("changed") if the file moved on since
+  write: (path, bytes, expect) =>
+    invoke<FileStat>('file_write', bytes, {
+      headers: {
+        'x-kanso-path': encodeURIComponent(path),
+        ...(expect ? { 'x-kanso-expect': `${expect.mtime}:${expect.size}` } : {}),
+      },
+    }),
 };
 
 export function startDesktop(target: Window = window): void {

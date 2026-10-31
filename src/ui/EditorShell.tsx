@@ -277,6 +277,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             replaceRecorded(view, text);
             return view.state.doc.toString() === text;
           },
+          editedSince: (at) => {
+            const w = writerRef.current;
+            return !!w && (w.dirty || w.draft.updatedAt > at);
+          },
           fileNotice: (n) => {
             setFileNote(n);
             if (n) setChromeVisible(true);
@@ -640,6 +644,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           return 'Couldn’t delete. Try again';
         }
         broadcast({ type: 'deleted', draftId }); // a tab showing it read-only moves on
+        void desktop?.draftDeleted(draftId).catch(() => {});
         setPalette(false);
         onDeleted();
         return null;

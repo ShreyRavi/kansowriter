@@ -27,6 +27,15 @@ describe('Markdown files round-trip byte for byte', () => {
     expect(dec(encodeMarkdown('a\nb\nc', format))).toBe('a\r\nb\r\nc\r\n');
   });
 
+  it('mixed line endings come back as the majority ending', () => {
+    expect(decodeMarkdown(enc('a\r\nb\r\nc\nd\r\n')).format.eol).toBe('\r\n');
+    expect(decodeMarkdown(enc('a\nb\nc\r\nd\n')).format.eol).toBe('\n');
+    expect(decodeMarkdown(enc('a\rb\rc\r\n')).format.eol).toBe('\n');
+    const { text, format } = decodeMarkdown(enc('a\r\nb\nc\r\n'));
+    expect(text).toBe('a\nb\nc');
+    expect(dec(encodeMarkdown(text, format))).toBe('a\r\nb\r\nc\r\n');
+  });
+
   it('refuses files that are not UTF-8 text', () => {
     expect(() => decodeMarkdown(new Uint8Array([0xff, 0xfe, 0x00]))).toThrow(NotTextError);
     expect(() => decodeMarkdown(enc('a\0b'))).toThrow(NotTextError);
@@ -43,7 +52,7 @@ describe('Markdown files round-trip byte for byte', () => {
 /** A disk with one file, and a clock for its mtimes. */
 function fakeDisk(initial: string | null) {
   let clock = 1000;
-  const disk = { text: initial as string | null, mtime: clock, writes: 0, failWrites: false, failReads: false };
+  const disk = { text: initial as string | null, mtime: clock, writes: 0, failWrites: false, failReads: false, readOnly: false };
   const stat = (): FileStat | null => (disk.text === null ? null : { mtime: disk.mtime, size: enc(disk.text).length });
   const ops: FileOps = {
     stat: vi.fn(async () => stat()),
@@ -51,8 +60,12 @@ function fakeDisk(initial: string | null) {
       if (disk.text === null || disk.failReads) throw new Error('not-found');
       return enc(disk.text);
     }),
-    write: vi.fn(async (_p: string, bytes: Uint8Array) => {
-      if (disk.failWrites) throw new Error('io: permission denied');
+    write: vi.fn(async (_p: string, bytes: Uint8Array, expect?: FileStat) => {
+      if (disk.failWrites) throw new Error('io: disk full');
+      if (disk.readOnly) throw 'read-only';
+      // as files.rs does right before the rename
+      const now = stat();
+      if (expect && (!now || now.mtime !== expect.mtime || now.size !== expect.size)) throw 'changed';
       disk.text = dec(bytes);
       disk.mtime = ++clock;
       disk.writes++;
@@ -68,7 +81,7 @@ function fakeDisk(initial: string | null) {
 }
 
 function fakeEditor(text: string, writable = true) {
-  const state = { text, writable, notices: [] as (FileNotice | null)[], replaced: [] as string[] };
+  const state = { text, writable, editedAfterSync: false, notices: [] as (FileNotice | null)[], replaced: [] as string[] };
   const port: EditorPort = {
     draftId: 'd1',
     text: () => state.text,
@@ -79,6 +92,7 @@ function fakeEditor(text: string, writable = true) {
       state.replaced.push(t);
       return true;
     },
+    editedSince: () => state.editedAfterSync,
     fileNotice: (n) => void state.notices.push(n),
     exportKanso: async () => null,
   };
@@ -89,7 +103,7 @@ function linked(fileText: string, draftText = fileText) {
   const d = fakeDisk(`${fileText}\n`);
   const e = fakeEditor(draftText);
   const st = d.stat()!;
-  const link: FileLink = { path: '/x/notes.md', eol: '\n', finalNewline: true, bom: false, hash: hashText(fileText), ...st };
+  const link: FileLink = { path: '/x/notes.md', eol: '\n', finalNewline: true, bom: false, hash: hashText(fileText), ...st, syncedAt: 1 };
   const saved: FileLink[] = [];
   const file = new LinkedFile(link, e.port, d.ops, async (l) => void saved.push(l));
   return { ...d, ...e, file, saved };
@@ -118,10 +132,10 @@ describe('LinkedFile: the draft and its file stay in step', () => {
     const t = linked('Hello');
     t.state.text = 'Hello there';
     t.file.changed();
-    await t.file.flush();
+    await expect(t.file.flush()).resolves.toBe(true);
     expect(t.disk.text).toBe('Hello there\n');
     // nothing waiting: a second flush writes nothing
-    await t.file.flush();
+    await expect(t.file.flush()).resolves.toBe(true);
     expect(t.disk.writes).toBe(1);
   });
 
@@ -180,7 +194,7 @@ describe('LinkedFile: the draft and its file stay in step', () => {
     expect(t.state.notices.at(-1)).toBeNull();
   });
 
-  it('a write that finds the file changed on disk looks first instead of writing over it', async () => {
+  it('a write that finds the file changed on disk (refused at the rename) looks instead of writing over it', async () => {
     const t = linked('Hello');
     t.state.text = 'Hello mine';
     t.file.changed();
@@ -223,9 +237,72 @@ describe('LinkedFile: the draft and its file stay in step', () => {
     t.disk.failWrites = true;
     t.state.text = 'Hello!';
     t.file.changed();
-    await t.file.flush();
+    // the quit hears about it: the file lacks the newest words
+    await expect(t.file.flush()).resolves.toBe(false);
     expect(t.state.notices).toEqual([{ kind: 'file-unwritable' }]);
     expect(t.disk.text).toBe('Hello\n');
+  });
+
+  it('a read-only file is never replaced: unwritable notice, flush false', async () => {
+    const t = linked('Hello');
+    t.disk.readOnly = true;
+    t.state.text = 'Hello!';
+    t.file.changed();
+    await expect(t.file.flush()).resolves.toBe(false);
+    expect(t.state.notices).toEqual([{ kind: 'file-unwritable' }]);
+    expect(t.disk.text).toBe('Hello\n');
+  });
+
+  it('flush is false while a conflict holds edits, or a lost file does; true for a lost file with nothing waiting', async () => {
+    const t = linked('Hello');
+    t.state.text = 'Hello mine';
+    t.file.changed();
+    t.edit('Hello theirs\n');
+    await t.file.check();
+    await expect(t.file.flush()).resolves.toBe(false);
+    const u = linked('Quiet');
+    u.edit(null);
+    await u.file.check();
+    await expect(u.file.flush()).resolves.toBe(true);
+    u.state.text = 'Quiet, more';
+    u.file.changed();
+    await expect(u.file.flush()).resolves.toBe(false);
+  });
+
+  it('a change on disk landing between the last look and the write is caught at the rename: a conflict, not a clobber', async () => {
+    const t = linked('Hello');
+    t.state.text = 'Hello mine';
+    t.file.changed();
+    // the stat the old code did first would have passed; the edit lands just before the write
+    const write = t.ops.write as ReturnType<typeof vi.fn<FileOps['write']>>;
+    const real = write.getMockImplementation()!;
+    write.mockImplementationOnce(async (p: string, b: Uint8Array, e?: FileStat) => {
+      t.edit('Hello theirs\n');
+      return real(p, b, e);
+    });
+    await t.file.flush();
+    expect(t.disk.text).toBe('Hello theirs\n');
+    expect(t.state.notices).toEqual([{ kind: 'file-conflict' }]);
+  });
+
+  it('on reopening, a draft that differs from an untouched file without newer edits is a conflict, not an overwrite', async () => {
+    const t = linked('Hello', 'Hello, restored from a backup');
+    t.state.editedAfterSync = false;
+    await t.file.check();
+    await vi.advanceTimersByTimeAsync(WRITE_DEBOUNCE_MS * 2);
+    expect(t.disk.writes).toBe(0);
+    expect(t.state.notices).toEqual([{ kind: 'file-conflict' }]);
+    t.file.useFile();
+    await t.file.flush();
+    expect(t.state.text).toBe('Hello');
+  });
+
+  it('a sync records when its text was taken, so later edits count as newer', async () => {
+    const t = linked('Hello');
+    t.state.text = 'Hello there';
+    t.file.changed();
+    await t.file.flush();
+    expect(t.saved.at(-1)?.syncedAt).toBe(Date.now());
   });
 
   it('touched without changing the text: nothing comes in, nothing is asked', async () => {
@@ -237,8 +314,9 @@ describe('LinkedFile: the draft and its file stay in step', () => {
     expect(t.saved.at(-1)?.mtime).toBe(t.disk.mtime);
   });
 
-  it('edits made while the file was last unsynced (a failed write before quitting) are written on the next open', async () => {
+  it('edits made after the last sync (a failed write before quitting) are written on the next open', async () => {
     const t = linked('Hello', 'Hello, later');
+    t.state.editedAfterSync = true;
     await t.file.check();
     await vi.advanceTimersByTimeAsync(WRITE_DEBOUNCE_MS + 10);
     expect(t.disk.text).toBe('Hello, later\n');

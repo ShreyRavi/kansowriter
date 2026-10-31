@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "The writing window may tell the app it has saved before quitting, read/write/stat only the Markdown and .kanso files the person handed this install (Finder, Dock, open -a, File > Open…, a save panel: src-tauri/src/files.rs refuses anything else), ask for a save panel, make the app the default for .md on request, and drag / zoom the window from its header. No other core, file system, shell or opener access: downloads and outside links are handled natively.",
+  "description": "The writing window may tell the app it has saved before quitting, read/write/stat only the Markdown and .kanso files the person handed this install (Finder, Dock, open -a, File > Open…, a save panel: src-tauri/src/files.rs refuses anything else, including symlinks to other kinds of file) and give such a grant up, ask for a save panel, make the app the default for .md on request, and drag / zoom the window from its header. No other core, file system, shell or opener access: downloads and outside links are handled natively.",
   "windows": ["main"],
   "permissions": [
     "allow-quit-ready",
@@ -9,6 +9,7 @@
     "allow-file-read",
     "allow-file-stat",
     "allow-file-write",
+    "allow-forget-file",
     "allow-pick-save-path",
     "allow-set-default-md",
     "core:window:allow-start-dragging",

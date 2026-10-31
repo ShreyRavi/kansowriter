@@ -11,6 +11,8 @@ tauri-build = { version = "=2.7.3", features = [] }
 [dependencies]
 tauri = { version = "=2.12.4", features = [] }
 serde = { version = "1", features = ["derive"] }
+# already in the tree: access(2) and the xattr calls that keep Finder tags across a linked file's save (src/files.rs)
+libc = "0.2"
 serde_json = "1"
 # File > Open… and the save panels (sheets on the window); no JS dialog plugin, nothing the page can call
 rfd = { version = "0.16", default-features = false }

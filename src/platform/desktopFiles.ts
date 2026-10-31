@@ -23,7 +23,7 @@ export interface DesktopFiles extends DesktopBridge {
   opened(): Promise<void>;
   /** a File menu item the page runs */
   menu(id: string): Promise<void>;
-  /** write every linked file that has edits waiting (quit): resolves when done */
+  /** write every linked file that has edits waiting (quit): true when every file holds its draft's text */
   flush(): Promise<boolean>;
   /** the window came back into focus: look for changes on disk */
   focused(): void;
@@ -54,16 +54,22 @@ const isLink = (x: unknown): x is FileLink => {
  */
 export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify = showDesktopNotice): DesktopFiles {
   let host: HostPort | null = null;
-  let waiters: ((h: HostPort) => void)[] = [];
+  let lastHost: HostPort | null = null;
+  /** resolves once a host is attached AND its links are loaded: nothing may look a link up earlier */
+  let markReady: () => void = () => {};
+  const ready = new Promise<void>((resolve) => (markReady = resolve));
   const links = new Map<string, FileLink>();
   const live = new Map<string, { file: LinkedFile; port: EditorPort }>();
   const editors: EditorPort[] = [];
   const listeners = new Set<() => void>();
-  const finals = new Set<Promise<void>>();
+  const finals = new Set<Promise<boolean>>();
   let opening: Promise<void> = Promise.resolve();
   let noted = false;
 
-  const whenHost = () => (host ? Promise.resolve(host) : new Promise<HostPort>((resolve) => waiters.push(resolve)));
+  const whenHost = async () => {
+    await ready;
+    return (host ?? lastHost)!;
+  };
   const emit = () =>
     listeners.forEach((l) => {
       try {
@@ -77,7 +83,11 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
     const before = links.get(draftId)?.path;
     if (link) links.set(draftId, link);
     else links.delete(draftId);
-    if (before !== link?.path) emit();
+    if (before !== link?.path) {
+      emit();
+      // a path no draft is linked to any more loses its grant (src-tauri/src/files.rs)
+      if (before && ![...links.values()].some((l) => l.path === before)) void invoke('forget_file', { path: before }).catch(() => {});
+    }
     await (await whenHost()).storage.patchSetting(LINKS_KEY, { [draftId]: link });
   };
 
@@ -90,11 +100,24 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
 
   const editorFor = (draftId: string) => [...editors].reverse().find((p) => p.draftId === draftId);
 
+  /** the stored links; returns the draft ids it found */
   const loadLinks = async (h: HostPort) => {
     const stored = await h.storage.getSetting<LinkMap>(LINKS_KEY).catch(() => undefined);
+    const found: string[] = [];
     if (stored && typeof stored === 'object')
-      for (const [id, l] of Object.entries(stored)) if (isLink(l) && !links.has(id)) links.set(id, l);
+      for (const [id, l] of Object.entries(stored))
+        if (isLink(l) && !links.has(id)) {
+          links.set(id, l);
+          found.push(id);
+        }
     emit();
+    return found;
+  };
+
+  /** stored links whose drafts are gone (deleted in an older session) let go of their files */
+  const dropStale = async (h: HostPort, ids: string[]) => {
+    for (const id of ids)
+      if (links.has(id) && (await h.storage.getRecord(id).catch(() => true)) === undefined) await persist(id, null).catch(() => {});
   };
 
   /** A draft linked to this path that still exists (a stale link is dropped). */
@@ -146,7 +169,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
         snapshots: [],
       });
     }
-    await persist(rec.id, { path, ...format, hash: hashText(text), mtime: stat.mtime, size: stat.size });
+    await persist(rec.id, { path, ...format, hash: hashText(text), mtime: stat.mtime, size: stat.size, syncedAt: Date.now() });
     await h.refreshDrafts();
     h.broadcast({ type: 'library' });
     h.open(rec.id);
@@ -207,10 +230,10 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
   const files: DesktopFiles = {
     attachHost(h) {
       host = h;
-      const ws = waiters;
-      waiters = [];
-      void loadLinks(h).then(() => {
-        ws.forEach((w) => w(h));
+      lastHost = h;
+      void loadLinks(h).then((ids) => {
+        markReady();
+        void dropStale(h, ids);
         void files.opened();
         void noteOnce(h);
       });
@@ -244,7 +267,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
           if (!f) return;
           live.delete(port.draftId);
           // the last edits still reach the file, and a quit right after waits for them
-          const done = f.dispose().catch(() => {});
+          const done = f.dispose().catch(() => false);
           finals.add(done);
           void done.then(() => finals.delete(done));
         },
@@ -261,6 +284,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
     async saveToFile(draftId) {
       const port = editorFor(draftId);
       if (!port) return 'Open this draft first';
+      const at = Date.now();
       const text = port.text();
       const path = await invoke<string | null>('pick_save_path', { kind: 'md', name: safeFileName(deriveMeta(text, 0).title) });
       if (!path) return null;
@@ -277,7 +301,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
         live.delete(other);
         await persist(other, null);
       }
-      const link: FileLink = { path, ...NEW_FILE_FORMAT, hash: hashText(text), mtime: stat.mtime, size: stat.size };
+      const link: FileLink = { path, ...NEW_FILE_FORMAT, hash: hashText(text), mtime: stat.mtime, size: stat.size, syncedAt: at };
       const current = live.get(draftId)?.file;
       if (current) {
         // the old file keeps what it had; this draft now writes only to the new one
@@ -328,8 +352,16 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
     },
 
     async flush() {
-      await Promise.all([...[...live.values()].map((l) => l.file.flush()), ...finals]);
-      return true;
+      // false while any linked file lacks edits it should have: the quit then says "Still saving"
+      const saved = await Promise.all([...[...live.values()].map((l) => l.file.flush().catch(() => false)), ...finals]);
+      return saved.every(Boolean);
+    },
+
+    async draftDeleted(draftId) {
+      await whenHost();
+      live.get(draftId)?.file.detach();
+      live.delete(draftId);
+      if (links.has(draftId)) await persist(draftId, null);
     },
 
     focused() {
