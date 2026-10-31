@@ -60,6 +60,9 @@ space:
   sendPanel: 620px
   endLink: 48px
   target: 44px
+  tool: 32px
+  dock: 48px
+  checkBox: 0.78em
 motion:
   chromeFadeDelay: 3000ms
   chromeFade: 200ms
@@ -67,6 +70,8 @@ motion:
   feedback: 2000ms
   endLinkDelay: 1500ms
   endLinkFade: 400ms
+  tooltipDelay: 500ms
+  tooltipFade: 120ms
 ---
 
 # Kansowriter design system
@@ -83,7 +88,12 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 ## Components
 | Component | Spec |
 |---|---|
-| Header | 20px 24px padding, 13px UI, 44px icon buttons, 18px 1.5-stroke icons: ☰ drafts, focus, theme, send (envelope), ⌘K |
+| Header | 20px 24px padding, 13px UI, 44px icon buttons, 18px 1.5-stroke icons: ☰ drafts + title left, formatting toolbar centred (desktop), focus, theme, send (envelope), ⌘K right |
+| Tooltip | header and toolbar icon buttons: the button's name + shortcut ("Focus mode ⌘⇧P", "Bold ⌘B"), 12px sans on an ink chip, `row` radius, 6px below the button (edge-aligned at the header's sides); shows on hover or keyboard focus after `tooltipDelay`, fades in over `tooltipFade`, hides at once; never on touch screens; the aria-label stays the accessible name (no native `title`) |
+| Format toolbar | `role=toolbar`, one Tab stop (←/→ between buttons); groups: style menu \| bullet, numbered, checklist, quote \| B I U S, split by 1px × 18px hairlines; `tool` (32px) buttons, 44px on coarse pointers; B I U S are 17px Newsreader glyphs drawn in their own style; pressed (`aria-pressed`) = `selected` background + ink; disabled 45% opacity (read-only tab, damaged draft); Tooltip = name + shortcut; a click never moves focus or the selection; fades with the chrome |
+| Style menu | button: current style 13px + 10px chevron, 100px min (dock: content width); menu: surface, hairline, `panel` radius, overlay shadow, 44px `menuitemradio` rows previewing Title / Heading / Subheading / Normal in Newsreader, key chip right, ✓ on the current one |
+| Format dock | phones (< 800px, coarse < 1024px, landscape phones): `dock` (48px) row of 44px targets, surface + hairline top, pinned to the visual viewport's bottom edge (above the on-screen keyboard; above a notice when no keyboard is open); shown only while the text has focus; scrolls sideways, never the page |
+| Checklist box | `checkBox` square, 1.5px muted border, `row` radius; checked = ink fill with a ground tick, item text muted; drawn in place of `[ ]` / `[x]` off the caret line (the line's `- ` hidden too); `role=checkbox`; ⌘↵ toggles the caret's lines; display-only in the reader |
 | Progress line | 2px, full width, pinned to the bottom edge; accent on track; settles to full over 600 ms at goal |
 | Notice strip | 40px above the progress line, surface, hairline top, 13px ink text, one text action right; one at a time |
 | Palette row | 44px min, 4px radius, label left, value + key chip right; in-row editing; inline destructive confirm |
@@ -91,6 +101,9 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 | Search field | 40px, magnifier icon, clear ✕ when filled, hidden label |
 | Reader | 680px column, hidden controls row (play/pause, scrubber, Skip to the end), date line top-left, 2px replay line, end-state link 48px below the text after 1.5 s (`endLinkFade`, none under reduced motion); empty state: "Open a letter file" 17px Newsreader (`openFile`) with a drop zone; reduced motion keeps the replay (static caret, no animated chrome) |
 | Send panel | 620px bottom panel 24px above the edge (phone: sheet, `rounded.sheet` top corners, max 60vh), live preview above, Replay / Final text only, start slider, size note, privacy line, primary Copy link / Download letter file |
+
+## Formatting
+Buttons and shortcuts write plain Markdown; syntax shows only on the caret line. Underline is `<u>…</u>`, the one piece of HTML styled (as a decoration; all other HTML stays text). Shortcuts (Mod = ⌘ / Ctrl): B bold, I italic, U underline, ⇧X strikethrough, ⇧7 numbered, ⇧8 bullet, ⇧9 checklist, ' quote, ↵ check, ⇧1 title, ⇧H heading, ⇧J subheading (Ctrl ⇧G off Apple), ⇧B normal. Title isn't ⇧T (typewriter, and the browser's reopen-tab); Ctrl ⇧J is the browser console.
 
 ## Browser surfaces
 Selection uses `selection`; caret 2px ink; focus-visible ring 2px accent, 2px offset; thin scrollbars in hairline; links underline offset 3px.

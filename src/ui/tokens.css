@@ -32,12 +32,17 @@
   --space-send-panel: 620px;
   --space-end-link: 48px;
   --space-target: 44px;
+  --space-tool: 32px;
+  --space-dock: 48px;
+  --space-check-box: 0.78em;
   --motion-chrome-fade-delay: 3000ms;
   --motion-chrome-fade: 200ms;
   --motion-goal-settle: 600ms;
   --motion-feedback: 2000ms;
   --motion-end-link-delay: 1500ms;
   --motion-end-link-fade: 400ms;
+  --motion-tooltip-delay: 500ms;
+  --motion-tooltip-fade: 120ms;
   --c-ground: #F5F0E6;
   --c-surface: #FBF8F1;
   --c-ink: #272320;
