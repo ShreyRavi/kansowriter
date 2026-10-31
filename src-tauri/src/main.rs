@@ -196,11 +196,10 @@ async fn pick_save_path(app: AppHandle, kind: String, name: String) -> Result<Op
         .map_err(|e| e.to_string())
 }
 
-/// The person answered "Open Markdown files with Kansowriter?": Yes (`mine`) makes this app the
-/// default for Markdown; Not now gives the default back where macOS handed it to this app on its
-/// own. Returns the types changed. Async: macOS may show a confirmation and wait for it.
+/// The palette's "Make Kansowriter the default for .md" (after another app was picked in
+/// Finder). Returns the types set. Async: macOS may show a confirmation and wait for it.
 #[tauri::command]
-async fn set_default_md(app: AppHandle, mine: bool) -> Result<Vec<String>, String> {
+async fn set_default_md(app: AppHandle) -> Result<Vec<String>, String> {
     #[allow(unused_mut)]
     let mut types = default_app::current_markdown_types();
     // debug builds only: aim at other types, so testing never changes the person's .md default
@@ -208,12 +207,7 @@ async fn set_default_md(app: AppHandle, mine: bool) -> Result<Vec<String>, Strin
     if let Ok(t) = std::env::var("KANSO_LS_TYPES") {
         types = t.split(',').map(str::to_string).collect();
     }
-    let id = app.config().identifier.clone();
-    if mine {
-        default_app::make_default(&id, &types)
-    } else {
-        default_app::give_back(&id, &types).map(|c| c.into_iter().map(|(t, _)| t).collect())
-    }
+    default_app::make_default(&app.config().identifier, &types)
 }
 
 /// Where the window may navigate: only the app itself. Everything else is refused.

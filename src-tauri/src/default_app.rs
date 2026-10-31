@@ -1,19 +1,18 @@
-//! "Open Markdown files with Kansowriter?": the default app for the content types macOS uses for
-//! .md / .markdown. Changed only on the person's answer: Yes (or the palette's "Make Kansowriter
-//! the default for .md") makes it this app; Not now gives the default back if macOS handed it to
-//! this app on its own.
+//! Kansowriter as the default app for the content types macOS uses for .md / .markdown.
 //!
-//! The app only offers itself: tauri.conf.json claims .md / .markdown (net.daringfireball.markdown,
-//! which macOS declares itself) as an Editor with rank Alternate, so it is listed under Open With.
-//! What was seen on macOS 26 while building this:
-//! - rank doesn't stop a takeover: once the app has been launched, LaunchServices picks it as the
-//!   implicit default over an app that claims .md by extension only and was never chosen
-//!   explicitly (VS Code). Hence Not now gives it back.
-//! - importing the type (UTImportedTypeDeclarations) made that happen even before a launch, so
-//!   the bundle doesn't.
-//! - LSSetDefaultRoleHandlerForContentType returns noErr and changes nothing, so this uses
-//!   NSWorkspace's setDefaultApplicationAtURL:toOpenContentType:completionHandler: (macOS 12+),
-//!   for which macOS may ask the person to confirm.
+//! Once installed it is the default: tauri.conf.json claims .md / .markdown
+//! (net.daringfireball.markdown, which macOS declares itself) as an Editor with rank Default, and
+//! the page says so once ("Markdown files now open in Kansowriter…"). Rank Alternate was tried
+//! first, to only be listed under Open With, but on macOS 26 LaunchServices made the app the
+//! implicit default anyway once it had been launched (over an app claiming .md by extension
+//! only, VS Code), so the rank now says what happens. The bundle still doesn't import the
+//! Markdown type (UTImportedTypeDeclarations): macOS declares it, and importing it isn't needed.
+//!
+//! The palette's "Make Kansowriter the default for .md" (`make_default`) takes it back after the
+//! person picked another app in Finder. LSSetDefaultRoleHandlerForContentType returns noErr and
+//! changes nothing on macOS 26, so it uses NSWorkspace's
+//! setDefaultApplicationAtURL:toOpenContentType:completionHandler: (macOS 12+), for which macOS
+//! may ask the person to confirm.
 use std::ffi::c_void;
 use std::sync::mpsc;
 use std::time::Duration;
@@ -23,7 +22,7 @@ use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject};
 use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSArray, NSBundle, NSError, NSString, NSURL};
+use objc2_foundation::{NSBundle, NSError, NSString, NSURL};
 
 /// The Markdown type declared by John Gruber and adopted by macOS; .md files carry it.
 pub const MARKDOWN_UTI: &str = "net.daringfireball.markdown";
@@ -35,7 +34,6 @@ const CONFIRM_WAIT: Duration = Duration::from_secs(120);
 #[link(name = "CoreServices", kind = "framework")]
 extern "C" {
     fn LSCopyDefaultRoleHandlerForContentType(content_type: *const c_void, role: u32) -> *mut c_void;
-    fn LSCopyAllRoleHandlersForContentType(content_type: *const c_void, role: u32) -> *mut c_void;
     fn UTTypeCreatePreferredIdentifierForTag(
         tag_class: *const c_void,
         tag: *const c_void,
@@ -88,30 +86,6 @@ pub fn handler_for(content_type: &str) -> Option<String> {
     owned(unsafe { LSCopyDefaultRoleHandlerForContentType(cf(&t), ROLES_ALL) })
 }
 
-/// Every app that can open `content_type`, in LaunchServices' order (Finder's Open With list).
-pub fn handlers_for(content_type: &str) -> Vec<String> {
-    let t = NSString::from_str(content_type);
-    // SAFETY: a valid CFString; the result is a +1 CFArrayRef of CFStrings (Copy rule) or null
-    let p = unsafe { LSCopyAllRoleHandlersForContentType(cf(&t), ROLES_ALL) };
-    if p.is_null() {
-        return Vec::new();
-    }
-    // SAFETY: CFArray is toll-free bridged to NSArray; Retained releases it
-    let Some(list) = (unsafe { Retained::from_raw(p as *mut NSArray<NSString>) }) else {
-        return Vec::new();
-    };
-    list.iter().map(|s| s.to_string()).collect()
-}
-
-/// Who should get a type back from this app: None when this app isn't the default, or no other
-/// app can open it. The first other app in LaunchServices' order (the one it would pick).
-pub fn previous_default(bundle_id: &str, current: Option<&str>, handlers: &[String]) -> Option<String> {
-    if !current.is_some_and(|c| c.eq_ignore_ascii_case(bundle_id)) {
-        return None;
-    }
-    handlers.iter().find(|h| !h.eq_ignore_ascii_case(bundle_id)).cloned()
-}
-
 /// Make the app at `app` the default for `content_type` (NSWorkspace; macOS may ask to confirm).
 fn set_handler(content_type: &str, app: &NSURL) -> Result<(), String> {
     let cls = AnyClass::get(c"UTType").ok_or("UniformTypeIdentifiers unavailable")?;
@@ -140,16 +114,12 @@ fn set_handler(content_type: &str, app: &NSURL) -> Result<(), String> {
         .map_err(|e| format!("{content_type} ({e})"))
 }
 
-fn app_url(bundle_id: &str) -> Option<Retained<NSURL>> {
-    NSWorkspace::sharedWorkspace().URLForApplicationWithBundleIdentifier(&NSString::from_str(bundle_id))
-}
-
 fn dry_run() -> bool {
     // debug builds only: say what would change without touching the person's defaults
     cfg!(debug_assertions) && std::env::var_os("KANSO_LS_DRY_RUN").is_some()
 }
 
-/// Yes: make this app (the running copy) the default for every Markdown type.
+/// Make this app (the running copy) the default for every Markdown type.
 pub fn make_default(bundle_id: &str, types: &[String]) -> Result<Vec<String>, String> {
     if dry_run() {
         for t in types {
@@ -179,32 +149,6 @@ pub fn make_default(bundle_id: &str, types: &[String]) -> Result<Vec<String>, St
     }
 }
 
-/// Not now: where macOS made this app the default on its own, give the type back to the app it
-/// would otherwise pick. Returns (type, app) for each one given back.
-pub fn give_back(bundle_id: &str, types: &[String]) -> Result<Vec<(String, String)>, String> {
-    let mut changed = Vec::new();
-    let mut failed = Vec::new();
-    for t in types {
-        let Some(other) = previous_default(bundle_id, handler_for(t).as_deref(), &handlers_for(t)) else {
-            continue;
-        };
-        if dry_run() {
-            eprintln!("[default-app] dry run: this app is the default for {t}; would give it back to {other}");
-            continue;
-        }
-        let Some(url) = app_url(&other) else { continue };
-        match set_handler(t, &url) {
-            Ok(()) => changed.push((t.clone(), other)),
-            Err(e) => failed.push(e),
-        }
-    }
-    if failed.is_empty() {
-        Ok(changed)
-    } else {
-        Err(failed.join(", "))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,35 +163,6 @@ mod tests {
         assert_eq!(
             markdown_types(&[Some("dyn.ah62d4rv4ge8043a".into()), None, Some(String::new())]),
             vec![MARKDOWN_UTI.to_string(), "dyn.ah62d4rv4ge8043a".to_string()]
-        );
-    }
-
-    #[test]
-    fn the_default_goes_back_only_when_this_app_took_it_and_another_can_open_it() {
-        let me = "com.kansoboard.writer";
-        let list = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let all = list(&["com.microsoft.VSCode", me, "com.apple.TextEdit"]);
-        assert_eq!(
-            previous_default(me, Some(me), &all).as_deref(),
-            Some("com.microsoft.VSCode")
-        );
-        assert_eq!(
-            previous_default(me, Some("COM.KANSOBOARD.WRITER"), &list(&[me, "com.apple.TextEdit"])).as_deref(),
-            Some("com.apple.TextEdit")
-        );
-        // someone else is the default: leave it
-        assert_eq!(previous_default(me, Some("com.microsoft.VSCode"), &all), None);
-        assert_eq!(previous_default(me, None, &all), None);
-        // nothing else opens it: stay
-        assert_eq!(previous_default(me, Some(me), &list(&[me])), None);
-    }
-
-    #[test]
-    fn giving_back_changes_nothing_when_this_app_isnt_the_default() {
-        // a bundle id that is no one's default: nothing to give back, nothing touched
-        assert_eq!(
-            give_back("com.kansoboard.writer.test-never-registered", &current_markdown_types()),
-            Ok(vec![])
         );
     }
 

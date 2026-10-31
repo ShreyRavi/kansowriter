@@ -5,7 +5,7 @@ import { encodeKanso } from '../core/backup';
 import { dayKey } from '../core/words';
 import { IndexedDbAdapter } from '../storage/idb';
 import type { EditorPort, HostPort } from '../ui/desktopBridge';
-import { createDesktopFiles, DESKTOP_KEY, LINKS_KEY, MD_PROMPT_DELAY_MS, type Invoke } from './desktopFiles';
+import { createDesktopFiles, DESKTOP_KEY, LINKS_KEY, MD_NOTE, MD_NOTE_DELAY_MS, type Invoke } from './desktopFiles';
 import type { FileLink, FileOps, FileStat } from './fileSync';
 
 // jsdom's Blob has no stream(), which the .kanso codec (CompressionStream) needs: use Node's
@@ -21,7 +21,7 @@ let clock: number;
 let opened: string[];
 let savePath: string | null;
 let defaultFails: boolean;
-let defaultCalls: boolean[];
+let defaultCalls: (boolean | undefined)[];
 let notices: string[];
 let host: HostPort & { open: ReturnType<typeof vi.fn<(id: string) => void>> };
 
@@ -45,7 +45,7 @@ const invoke = (async (cmd: string, args?: Record<string, unknown>) => {
   if (cmd === 'take_opened') return opened.splice(0);
   if (cmd === 'pick_save_path') return savePath ? `${savePath}/${String(args?.name)}.${String(args?.kind)}` : null;
   if (cmd === 'set_default_md') {
-    defaultCalls.push(args?.mine as boolean);
+    defaultCalls.push(args?.mine as boolean | undefined);
     if (defaultFails) throw new Error('-54');
     return ['net.daringfireball.markdown'];
   }
@@ -239,24 +239,31 @@ describe('Save to File…, the editor link and quitting', () => {
   });
 });
 
-describe('the Markdown question', () => {
-  it('asks once, quietly, after a pause; Yes sets the default and says how it went', async () => {
+describe('the first-launch Markdown note', () => {
+  it('says once, after a pause and without asking anything, that .md files open here and how to change it', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const asks: { text: string; actions?: { label: string; run(): void }[] }[] = [];
-    const files = createDesktopFiles(ops, invoke, (text, actions) => void asks.push({ text, actions }));
-    files.attachHost(host);
-    await pass(MD_PROMPT_DELAY_MS + 200);
-    expect(asks.map((a) => a.text)).toEqual(['Open Markdown files with Kansowriter?']);
-    expect(asks[0]!.actions!.map((a) => a.label)).toEqual(['Yes', 'Not now']);
-    asks[0]!.actions![0]!.run();
+    const notes: { text: string; actions?: { label: string; run(): void }[]; ms?: number | null }[] = [];
+    createDesktopFiles(ops, invoke, (text, actions, ms) => void notes.push({ text, actions, ms })).attachHost(host);
+    await pass(MD_NOTE_DELAY_MS - 300);
+    expect(notes).toEqual([]);
+    await pass(500);
+    expect(notes.map((n) => n.text)).toEqual([
+      'Markdown files now open in Kansowriter. To change that, use Get Info › Open with in Finder.',
+    ]);
+    expect(notes[0]!.text).toBe(MD_NOTE);
+    // stays until dismissed; dismissing changes nothing else
+    expect(notes[0]!.ms).toBeNull();
+    expect(notes[0]!.actions!.map((a) => a.label)).toEqual(['Dismiss']);
+    notes[0]!.actions![0]!.run();
     await pass(200);
-    expect(asks.at(-1)?.text).toBe('Markdown files now open in Kansowriter.');
-    expect(defaultCalls).toEqual([true]);
-    expect(await storage.getSetting(DESKTOP_KEY)).toEqual({ mdAsked: true });
-    // the next launch doesn't ask again
+    expect(notes).toHaveLength(1);
+    // it never touches LaunchServices
+    expect(defaultCalls).toEqual([]);
+    expect(await storage.getSetting(DESKTOP_KEY)).toEqual({ mdNoted: true });
+    // the next launch says nothing
     const again: string[] = [];
     createDesktopFiles(ops, invoke, (t) => void again.push(t)).attachHost(host);
-    await pass(MD_PROMPT_DELAY_MS * 3);
+    await pass(MD_NOTE_DELAY_MS * 3);
     expect(again).toEqual([]);
   });
 
@@ -265,27 +272,33 @@ describe('the Markdown question', () => {
     const busy = document.createElement('div');
     busy.className = 'notice';
     document.body.append(busy);
-    const asks: string[] = [];
-    createDesktopFiles(ops, invoke, (t) => void asks.push(t)).attachHost(host);
-    await pass(MD_PROMPT_DELAY_MS * 3);
-    expect(asks).toEqual([]);
+    const notes: string[] = [];
+    createDesktopFiles(ops, invoke, (t) => void notes.push(t)).attachHost(host);
+    await pass(MD_NOTE_DELAY_MS * 3);
+    expect(notes).toEqual([]);
     busy.remove();
-    await pass(MD_PROMPT_DELAY_MS + 200);
-    expect(asks).toEqual(['Open Markdown files with Kansowriter?']);
+    await pass(MD_NOTE_DELAY_MS + 200);
+    expect(notes).toEqual([MD_NOTE]);
   });
 
-  it('Not now quietly gives back a default macOS handed over on its own', async () => {
+  it('a second attach in the same session (the Router remounting) says nothing more', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const asks: { text: string; actions?: { label: string; run(): void }[] }[] = [];
-    createDesktopFiles(ops, invoke, (text, actions) => void asks.push({ text, actions })).attachHost(host);
-    await pass(MD_PROMPT_DELAY_MS + 200);
-    asks[0]!.actions![1]!.run();
-    await pass(200);
-    expect(defaultCalls).toEqual([false]);
-    expect(asks).toHaveLength(1);
+    const notes: string[] = [];
+    const files = createDesktopFiles(ops, invoke, (t) => void notes.push(t));
+    files.attachHost(host);
+    files.attachHost(host);
+    await pass(MD_NOTE_DELAY_MS * 2);
+    expect(notes).toEqual([MD_NOTE]);
+  });
+});
+
+describe('Make Kansowriter the default for .md (palette)', () => {
+  it('sets it back through the app and says so calmly', async () => {
+    expect(await make().makeDefault()).toBe('Markdown files now open in Kansowriter');
+    expect(defaultCalls).toEqual([undefined]);
   });
 
-  it('a refusal from LaunchServices is reported, not thrown', async () => {
+  it('a refusal from macOS is reported, not thrown', async () => {
     defaultFails = true;
     expect(await make().makeDefault()).toBe('Couldn’t change the default app for Markdown');
   });

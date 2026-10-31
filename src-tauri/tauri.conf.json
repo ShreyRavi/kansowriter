@@ -46,7 +46,7 @@
         "ext": ["md", "markdown"],
         "name": "Markdown document",
         "role": "Editor",
-        "rank": "Alternate",
+        "rank": "Default",
         "contentTypes": ["net.daringfireball.markdown"]
       },
       {

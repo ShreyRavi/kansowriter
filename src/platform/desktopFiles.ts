@@ -8,10 +8,12 @@ import { noticeShowing, showDesktopNotice, type NoticeAction } from './notice';
 
 /** setting key: draft id → its linked file (desktop only; never in drafts, backups or letters) */
 export const LINKS_KEY = 'fileLinks';
-/** setting key: desktop-only choices ({ mdAsked }) */
+/** setting key: desktop-only state ({ mdNoted }) */
 export const DESKTOP_KEY = 'desktop';
-/** the Markdown question waits this long after start, so it never greets someone mid-thought */
-export const MD_PROMPT_DELAY_MS = 1500;
+/** the first-launch note waits this long after start, so it never greets someone mid-thought */
+export const MD_NOTE_DELAY_MS = 1500;
+/** Kansowriter is the .md default once installed (src-tauri/src/default_app.rs); said once */
+export const MD_NOTE = 'Markdown files now open in Kansowriter. To change that, use Get Info › Open with in Finder.';
 
 export type Invoke = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 export type Notify = (text: string, actions?: NoticeAction[], ms?: number | null) => void;
@@ -48,7 +50,7 @@ const isLink = (x: unknown): x is FileLink => {
 /**
  * The macOS app's file side of the shared UI (src/ui/desktopBridge.ts): opening .md and .kanso
  * files, keeping linked Markdown files in step (fileSync.ts), the File menu's saves, and the
- * one-time "Open Markdown files with Kansowriter?".
+ * one-time note that Markdown files now open here.
  */
 export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify = showDesktopNotice): DesktopFiles {
   let host: HostPort | null = null;
@@ -59,7 +61,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
   const listeners = new Set<() => void>();
   const finals = new Set<Promise<void>>();
   let opening: Promise<void> = Promise.resolve();
-  let asked = false;
+  let noted = false;
 
   const whenHost = () => (host ? Promise.resolve(host) : new Promise<HostPort>((resolve) => waiters.push(resolve)));
   const emit = () =>
@@ -180,33 +182,26 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
 
   const makeDefault = async () => {
     try {
-      await invoke<string[]>('set_default_md', { mine: true });
+      await invoke<string[]>('set_default_md');
       return 'Markdown files now open in Kansowriter';
     } catch {
       return 'Couldn’t change the default app for Markdown';
     }
   };
 
-  const askOnce = async (h: HostPort) => {
-    if (asked) return;
-    asked = true;
-    const d = await h.storage.getSetting<{ mdAsked?: boolean }>(DESKTOP_KEY).catch(() => undefined);
-    if (d?.mdAsked) return;
+  /** first launch: say once that .md files now open here, and how to change that */
+  const noteOnce = async (h: HostPort) => {
+    if (noted) return;
+    noted = true;
+    const d = await h.storage.getSetting<{ mdNoted?: boolean }>(DESKTOP_KEY).catch(() => undefined);
+    if (d?.mdNoted) return;
     const show = () => {
       // never over another notice (a saving problem matters more): wait for the strip to be free
-      if (noticeShowing()) return void setTimeout(show, MD_PROMPT_DELAY_MS);
-      void h.storage.patchSetting(DESKTOP_KEY, { mdAsked: true }).catch(() => {});
-      notify(
-        'Open Markdown files with Kansowriter?',
-        [
-          { label: 'Yes', run: () => void makeDefault().then((label) => notify(`${label}.`)) },
-          // macOS may already have handed .md to this app on its own: Not now gives it back (quietly)
-          { label: 'Not now', run: () => void invoke<string[]>('set_default_md', { mine: false }).catch(() => {}) },
-        ],
-        null,
-      );
+      if (noticeShowing()) return void setTimeout(show, MD_NOTE_DELAY_MS);
+      void h.storage.patchSetting(DESKTOP_KEY, { mdNoted: true }).catch(() => {});
+      notify(MD_NOTE, [{ label: 'Dismiss', run: () => {} }], null);
     };
-    setTimeout(show, MD_PROMPT_DELAY_MS);
+    setTimeout(show, MD_NOTE_DELAY_MS);
   };
 
   const files: DesktopFiles = {
@@ -217,7 +212,7 @@ export function createDesktopFiles(ops: FileOps, invoke: Invoke, notify: Notify 
       void loadLinks(h).then(() => {
         ws.forEach((w) => w(h));
         void files.opened();
-        void askOnce(h);
+        void noteOnce(h);
       });
       return () => {
         if (host === h) host = null;
