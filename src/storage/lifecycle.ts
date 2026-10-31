@@ -22,13 +22,16 @@ const disposing = new Map<string, Promise<void>>();
 
 /** each live session's "save everything now" (the desktop app runs these before it quits) */
 const flushers = new Set<() => Promise<boolean>>();
+/** final saves of sessions still disposing (a draft just switched away from): true when all saved */
+const finalSaves = new Set<Promise<boolean>>();
 
 /**
- * Save every open draft now, as a page hide would, and wait for it. True when nothing is left
- * unsaved. The macOS app calls this before quitting: a closing WKWebView fires no pagehide.
+ * Save every open draft now, as a page hide would, and wait for it, including the last save of a
+ * draft that is still closing. True when nothing is left unsaved. The macOS app calls this before
+ * quitting: a closing WKWebView fires no pagehide.
  */
 export async function flushOpenDrafts(): Promise<boolean> {
-  const saved = await Promise.all([...flushers].map((f) => f().catch(() => false)));
+  const saved = await Promise.all([...[...flushers].map((f) => f().catch(() => false)), ...finalSaves]);
   return saved.every(Boolean);
 }
 
@@ -281,10 +284,14 @@ export function attachDraftSession(
     const w = writer;
     writer = null;
     if (handover) await handover; // let a running handover finish before releasing
+    let saved = true;
     try {
       if (w) {
         await w.flush(true);
-        if (w.dirty) w.abandon();
+        if (w.dirty) {
+          saved = false;
+          w.abandon();
+        }
       }
     } finally {
       release?.();
@@ -292,6 +299,7 @@ export function attachDraftSession(
       await held.catch(() => {});
       bc?.close();
     }
+    return saved;
   };
 
   return {
@@ -334,7 +342,11 @@ export function attachDraftSession(
       disposed = true;
       // chain on any earlier session still releasing, so the map's entry covers all of them
       const prior = disposing.get(name);
-      const done: Promise<void> = Promise.all([prior?.catch(() => {}), disposeInner()])
+      const inner = disposeInner();
+      const saved = inner.catch(() => false);
+      finalSaves.add(saved);
+      void saved.then(() => finalSaves.delete(saved));
+      const done: Promise<void> = Promise.all([prior?.catch(() => {}), inner])
         .then(
           () => {},
           () => {},

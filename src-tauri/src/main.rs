@@ -1,27 +1,21 @@
 // Kansowriter for macOS: the web app's frontend in a WKWebView, plus the few things a browser
 // would otherwise do for it (save downloads, open outside links, flush unsaved words on quit).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Instant;
 
 use tauri::webview::{DownloadEvent, NewWindowResponse};
 use tauri::{AppHandle, Manager, Url, WebviewWindowBuilder, WindowEvent};
 
 #[cfg(debug_assertions)]
 mod probe;
+mod quit;
 mod terminate;
 
-/// The page has this long to save before the app quits anyway (the page itself gives up at 2 s).
-const QUIT_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// The page has answered (or the wait is over): the next terminate request really quits.
+/// The page has answered (or the wait is over) and the app is quitting: terminate requests pass.
 static EXITING: AtomicBool = AtomicBool::new(false);
-/// A quit (⌘Q, ⌘W, the close button) is in progress: waiting for the page to save.
-static QUITTING: AtomicBool = AtomicBool::new(false);
-/// The page could not save everything once; the next quit goes through regardless.
-static FORCE: AtomicBool = AtomicBool::new(false);
-/// Bumped per quit attempt, so a stale timeout never ends a later attempt.
-static ATTEMPT: AtomicU64 = AtomicU64::new(0);
+static QUIT: Mutex<quit::State> = Mutex::new(quit::State::new());
 
 /// Where the window may navigate: only the app itself. Everything else is refused.
 fn is_app_url(url: &Url) -> bool {
@@ -51,7 +45,7 @@ fn open_externally(url: &Url) {
 }
 
 /// Exports and backups are blob downloads made by the page: save them to ~/Downloads, as a
-/// browser would (WebKit picks the name and adds " (1)" when it exists). Nothing else downloads.
+/// browser would (WebKit suggests the name; wry adds " (1)" when it exists). Nothing else downloads.
 fn allow_download(url: &Url) -> bool {
     url.scheme() == "blob"
 }
@@ -65,58 +59,68 @@ macro_rules! trace {
 }
 pub(crate) use trace;
 
-fn exit_now(app: &AppHandle) {
-    trace!("exit");
-    EXITING.store(true, Ordering::SeqCst);
-    app.exit(0);
+fn quit_state() -> std::sync::MutexGuard<'static, quit::State> {
+    QUIT.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Ask the page to save every open draft, then quit (it answers through `quit_ready`).
-fn request_quit(app: &AppHandle) {
-    trace!("requested (force: {})", FORCE.load(Ordering::SeqCst));
-    let Some(window) = app.get_webview_window("main") else {
-        return exit_now(app);
+/// Act on a decision: quit (answering AppKit, or exiting ourselves after ⌘W), or stay open.
+fn finish(app: &AppHandle, outcome: quit::Outcome) {
+    trace!("{outcome:?}");
+    match outcome {
+        quit::Outcome::Proceed { terminate } => {
+            EXITING.store(true, Ordering::SeqCst);
+            if terminate {
+                terminate::reply(app, true);
+            } else {
+                app.exit(0);
+            }
+        }
+        quit::Outcome::Stay { terminate } => {
+            if terminate {
+                terminate::reply(app, false);
+            }
+        }
+    }
+}
+
+/// Ask the page to save every open draft (it answers through `quit_ready`), with a time cap.
+fn request_quit(app: &AppHandle, via: quit::Via) {
+    let Some(attempt) = quit_state().begin(via, Instant::now()) else {
+        trace!("{via:?} joins the quit in progress");
+        return;
     };
-    if FORCE.load(Ordering::SeqCst) {
-        // second try after a failed save: one more save attempt, then quit whatever happens
-        let _ = window.eval("window.__kansoBeforeQuit?.()");
-        let app = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(QUIT_TIMEOUT);
-            exit_now(&app);
-        });
-        return;
-    }
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    let attempt = ATTEMPT.fetch_add(1, Ordering::SeqCst) + 1;
+    trace!("{via:?}: attempt {attempt}");
     // a page without the hook (still loading, or crashed) has nothing of ours to save
-    if window
-        .eval("window.__kansoBeforeQuit ? window.__kansoBeforeQuit() : window.__TAURI_INTERNALS__.invoke('quit_ready', { saved: true })")
-        .is_err()
-    {
-        return exit_now(app);
+    let asked = app.get_webview_window("main").is_some_and(|w| {
+        w.eval("window.__kansoBeforeQuit ? window.__kansoBeforeQuit() : window.__TAURI_INTERNALS__.invoke('quit_ready', { saved: true })")
+            .is_ok()
+    });
+    if !asked {
+        let outcome = quit_state().timeout(attempt);
+        if let Some(outcome) = outcome {
+            finish(app, outcome);
+        }
+        return;
     }
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(QUIT_TIMEOUT);
-        if QUITTING.load(Ordering::SeqCst) && ATTEMPT.load(Ordering::SeqCst) == attempt {
-            exit_now(&app);
+        std::thread::sleep(quit::QUIT_TIMEOUT);
+        let outcome = quit_state().timeout(attempt);
+        if let Some(outcome) = outcome {
+            trace!("no answer within {:?}", quit::QUIT_TIMEOUT);
+            finish(&app, outcome);
         }
     });
 }
 
-/// The page saved (or tried to). If something is still unsaved it stays open, showing its own
-/// notice, and the next quit goes through regardless.
+/// The page saved (or tried to). With words still unsaved the app stays open once, showing a
+/// notice; a quit within quit::FORCE_WINDOW then goes through.
 #[tauri::command]
 fn quit_ready(app: AppHandle, saved: bool) {
     trace!("page answered, saved: {saved}");
-    if saved || FORCE.load(Ordering::SeqCst) {
-        exit_now(&app);
-    } else {
-        FORCE.store(true, Ordering::SeqCst);
-        QUITTING.store(false, Ordering::SeqCst);
+    let outcome = quit_state().answer(saved, Instant::now());
+    if let Some(outcome) = outcome {
+        finish(&app, outcome);
     }
 }
 
@@ -164,7 +168,7 @@ fn main() {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
                     api.prevent_close();
-                    request_quit(window.app_handle());
+                    request_quit(window.app_handle(), quit::Via::Close);
                 }
             }
         })

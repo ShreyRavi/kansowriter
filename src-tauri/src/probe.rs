@@ -6,7 +6,7 @@
 //!                                      real NSEvents sent through NSApp (trusted input: menus,
 //!                                      key equivalents and user activation behave as for a person)
 //!   { do: [{ performClose: true }] }  [window performClose:], what ⌘W / the close button send
-//!   { terminate: true }                [NSApp terminate:], the path ⌘Q takes
+//!   { terminate: true }                [NSApp terminate:], the path ⌘Q takes (polling goes on)
 //!   { done: true }                     stop polling
 //! After each message the loop clears `__kansoProbe` and calls `__kansoProbeAck()`.
 //! KANSO_DOWNLOAD_DIR moves downloads out of ~/Downloads. None of this exists in release builds.
@@ -155,9 +155,21 @@ pub fn attach(builder: WebviewWindowBuilder<'_, Wry, AppHandle>) -> WebviewWindo
                     append(&out, "\"terminate\"");
                     let _ = window.run_on_main_thread(|| {
                         let mtm = MainThreadMarker::new().expect("main thread");
-                        NSApplication::sharedApplication(mtm).terminate(None);
+                        let app = NSApplication::sharedApplication(mtm);
+                        // queued to the run loop, as a menu click is: terminate: must not run inside
+                        // tao's event callback (its NSTerminateLater wait would end in tao's exit
+                        // handler while the callback still holds tao's lock)
+                        // SAFETY: performSelectorOnMainThread:withObject:waitUntilDone: with terminate: and nil
+                        unsafe {
+                            let _: () = objc2::msg_send![
+                                &*app,
+                                performSelectorOnMainThread: objc2::sel!(terminate:),
+                                withObject: std::ptr::null::<objc2::runtime::AnyObject>(),
+                                waitUntilDone: false
+                            ];
+                        }
                     });
-                    return;
+                    // keep listening: a quit the app refuses (unsaved words) leaves the page running
                 }
                 if flag(&msg, "done") {
                     return;

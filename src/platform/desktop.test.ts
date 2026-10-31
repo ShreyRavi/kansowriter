@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { invoke, flushOpenDrafts } = vi.hoisted(() => ({
@@ -7,14 +8,17 @@ const { invoke, flushOpenDrafts } = vi.hoisted(() => ({
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
 vi.mock('../storage/lifecycle', () => ({ flushOpenDrafts }));
 
-const { beforeQuit, startDesktop, SAVE_BEFORE_QUIT_MS } = await import('./desktop');
+const { beforeQuit, startDesktop, showQuitNotice, SAVE_BEFORE_QUIT_MS, QUIT_NOTICE_MS, QUIT_NOTICE_TEXT } = await import('./desktop');
 
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => {
   vi.useRealTimers();
   invoke.mockClear();
   flushOpenDrafts.mockReset().mockResolvedValue(true);
+  document.body.innerHTML = '';
 });
+
+const notice = () => document.getElementById('kanso-quit-notice');
 
 /** run beforeQuit to completion under fake timers */
 async function quit(timeoutMs = SAVE_BEFORE_QUIT_MS) {
@@ -31,6 +35,7 @@ describe('desktop: save before quitting', () => {
     await quit();
     expect(order).toEqual(['flush', 'flush', 'quit_ready']);
     expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: true });
+    expect(notice()).toBeNull();
   });
 
   it('keys that land after the first save are saved before the app quits', async () => {
@@ -46,6 +51,7 @@ describe('desktop: save before quitting', () => {
     await quit();
     expect(invoke).toHaveBeenCalledOnce();
     expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: false });
+    expect(notice()?.textContent).toBe(QUIT_NOTICE_TEXT);
   });
 
   it('a save that throws still answers, as unsaved', async () => {
@@ -60,6 +66,27 @@ describe('desktop: save before quitting', () => {
     await vi.advanceTimersByTimeAsync(1999);
     expect(invoke).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
+    await done;
+    expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: false });
+    // the ignored quit is not silent
+    expect(notice()?.getAttribute('role')).toBe('alert');
+  });
+
+  it("the notice uses the app's notice bar, replaces an older one and goes once a second quit stops being forced", async () => {
+    showQuitNotice();
+    const el = showQuitNotice();
+    expect(document.querySelectorAll('#kanso-quit-notice')).toHaveLength(1);
+    expect(el.className).toBe('notice');
+    await vi.advanceTimersByTimeAsync(QUIT_NOTICE_MS);
+    expect(notice()).toBeNull();
+  });
+
+  it('a notice that fails to show never blocks the answer', async () => {
+    flushOpenDrafts.mockResolvedValue(false);
+    const done = beforeQuit(undefined, undefined, 200, () => {
+      throw new Error('no body');
+    });
+    await vi.advanceTimersByTimeAsync(300);
     await done;
     expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: false });
   });
