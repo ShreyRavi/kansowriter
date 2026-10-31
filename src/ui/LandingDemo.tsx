@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type SyntheticEvent } from 'react';
 // Recorded from the real app by scripts/record-demo.ts. Imported (not in public/) so the files get
 // content-hashed names (/assets/demo-*, cached as immutable in vercel.json); the service worker
 // never precaches them (vite.config.ts globIgnores).
@@ -102,13 +102,27 @@ function DemoVideo({ theme }: { theme: Theme }) {
     };
   }, [near]);
 
+  const shouldPlay = near && wantPlay && inView;
+  const shouldPlayRef = useRef(shouldPlay);
+  shouldPlayRef.current = shouldPlay;
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v || !near) return;
     v.muted = true; // React doesn't reflect `muted` reliably; autoplay needs it set
-    if (wantPlay && inView) v.play().catch(() => setPlaying(false));
+    if (shouldPlay) v.play().catch(() => setPlaying(false));
     else v.pause();
-  }, [near, inView, wantPlay, theme, videos]);
+  }, [near, shouldPlay, theme, videos]);
+
+  /**
+   * A play() made while the video is still choosing a source or fetching its first frames can be
+   * dropped (WebKit does this on a fast first load, now that the demo sits in the hero): try again
+   * once it can play, if it still should.
+   */
+  const retryPlay = (e: SyntheticEvent<HTMLVideoElement>) => {
+    const v = e.currentTarget;
+    if (shouldPlayRef.current && v.paused) v.play().catch(() => setPlaying(false));
+  };
 
   const toggle = () => {
     const next = playing ? 'pause' : 'play';
@@ -137,6 +151,8 @@ function DemoVideo({ theme }: { theme: Theme }) {
               preload="none"
               aria-label="Demo video: a letter is written, sent as a link and replayed"
               aria-describedby="demo-desc"
+              onCanPlay={retryPlay}
+              onLoadedData={retryPlay}
               onPlay={() => setPlaying(true)}
               onPause={() => setPlaying(false)}
             >
