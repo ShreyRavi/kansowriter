@@ -53,6 +53,17 @@ export interface BackupData {
   days: Day[];
 }
 
+/** One draft with its whole history: a .kanso file (src/core/backup.ts) */
+export interface KansoFile {
+  format: 'kanso';
+  v: 1;
+  exportedAt: number;
+  draft: BackupDraft;
+}
+
+/** How one imported draft landed: already here (opened as is), new, or a copy beside a diverged one */
+export type DraftImport = { id: string; status: 'existing' | 'added' | 'copy' } | { status: 'damaged' };
+
 /** Storage boundary: IndexedDB now, Tauri files later (premise 5). */
 export interface StorageAdapter {
   listDrafts(): Promise<DraftRecord[]>;
@@ -83,6 +94,14 @@ export interface StorageAdapter {
   resetDay(key: string): Promise<Day>;
   exportAll(): Promise<BackupData>;
   importAll(data: BackupData): Promise<ImportResult>;
+  /** one draft with its history and base snapshot (a .kanso file); null when it is gone */
+  exportDraft(id: string): Promise<BackupDraft | null>;
+  /**
+   * Import one draft (a .kanso file). A draft with the same id whose history already holds the
+   * file's (equal, or the file is an older prefix of it) is opened as is; any other history comes
+   * in as a copy with a new id. Histories are never merged.
+   */
+  importDraft(draft: BackupDraft): Promise<DraftImport>;
   getSetting<T>(key: string): Promise<T | undefined>;
   /** merge `patch` into the stored object in one transaction (tabs never write back stale fields) */
   patchSetting(key: string, patch: Record<string, unknown>): Promise<void>;

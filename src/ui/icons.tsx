@@ -107,3 +107,10 @@ export const ChevronIcon = () => (
     <path d="M2 3.5l3 3 3-3" />
   </svg>
 );
+/** a small page with a folded corner: a draft linked to a file on disk (macOS sidebar) */
+export const FileIcon = () => (
+  <svg {...base} width={12} height={12} strokeLinejoin="round">
+    <path d="M4 1.75h6.25L14 5.5v10.75H4z" />
+    <path d="M10 1.75V5.75h4" />
+  </svg>
+);

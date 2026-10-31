@@ -3,7 +3,17 @@ import { Text } from '@codemirror/state';
 import { runsOf, type Op } from '../core/kop';
 import { deriveMeta, newEpoch, SNAPSHOT_EVERY, type DraftMeta, type DraftRecord, type Snapshot } from '../core/draft';
 import { applyDelta, emptyDay, resetDay, type Day } from '../core/words';
-import type { AppendBatch, AppendResult, BackupData, ImportResult, LetterSource, LoadedDraft, StorageAdapter } from '../core/storage';
+import type {
+  AppendBatch,
+  AppendResult,
+  BackupData,
+  BackupDraft,
+  DraftImport,
+  ImportResult,
+  LetterSource,
+  LoadedDraft,
+  StorageAdapter,
+} from '../core/storage';
 
 /**
  * Replay on a rope: each op costs O(runs × log n) instead of copying the whole string, so a
@@ -38,6 +48,27 @@ function replayRope(
     if ((i + 1) % SNAPSHOT_EVERY === 0) onSnapshot?.(i + 1, doc);
   }
   return { doc, ok: true, applied: ops.length };
+}
+
+interface Prepared {
+  d: BackupDraft;
+  base: Snapshot | undefined;
+  text: string;
+  snap: Snapshot | null;
+}
+
+/**
+ * Replay an imported draft before its transaction: only the opIndex-0 base snapshot is trusted
+ * from the file, the newest snapshot is rebuilt from the (shape-checked) ops. Null when they don't
+ * replay. Meta (title, excerpt, words) is later derived from this text, never copied from the file.
+ */
+function prepareImport(d: BackupDraft): Prepared | null {
+  const base = d.snapshots.find((s) => s.opIndex === 0);
+  let last: { opIndex: number; doc: Text } | null = null;
+  const { doc, ok } = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
+  if (!ok) return null;
+  const l = last as { opIndex: number; doc: Text } | null;
+  return { d, base, text: doc.toString(), snap: l ? { opIndex: l.opIndex, text: l.doc.toString() } : null };
 }
 
 /**
@@ -240,15 +271,7 @@ export class IndexedDbAdapter implements StorageAdapter {
    * excerpt, words) is derived from the replayed text, never copied from the file.
    */
   async importAll(data: BackupData): Promise<ImportResult> {
-    const prepared = data.drafts.map((d) => {
-      const base = d.snapshots.find((s) => s.opIndex === 0);
-      let last: { opIndex: number; doc: Text } | null = null;
-      const { doc, ok } = replayRope(base?.text ?? '', d.ops, (opIndex, doc) => (last = { opIndex, doc }));
-      if (!ok) return null;
-      const l = last as { opIndex: number; doc: Text } | null;
-      const snap: Snapshot | null = l ? { opIndex: l.opIndex, text: l.doc.toString() } : null;
-      return { d, base, text: doc.toString(), snap };
-    });
+    const prepared = data.drafts.map(prepareImport);
     return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots, this.db.days], async () => {
       const r: ImportResult = { added: 0, copies: 0, skipped: 0, damaged: 0 };
       let texts: Set<string> | null = null; // every local draft's text, loaded once on the first fork
@@ -264,41 +287,85 @@ export class IndexedDbAdapter implements StorageAdapter {
           r.damaged++;
           continue;
         }
-        const { d, base, text, snap } = p;
-        const rec = d.record;
-        let id = rec.id;
-        // rebuild from known fields only: unknown keys in the file never reach storage
-        let meta: DraftMeta = deriveMeta(text);
+        let id = p.d.record.id;
+        let suffix = '';
         if (await this.db.drafts.get(id)) {
-          if ((await this.alreadyHere(id, d.ops, text)) || (await localTexts()).has(text)) {
+          if ((await this.alreadyHere(id, p.d.ops, p.text)) || (await localTexts()).has(p.text)) {
             r.skipped++;
             continue;
           }
           id = crypto.randomUUID();
-          meta = { ...meta, title: `${meta.title} (from backup)` };
+          suffix = ' (from backup)';
           r.copies++;
         }
         r.added++;
-        (texts as Set<string> | null)?.add(text);
-        const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
-        if (snap) snaps.push({ draftId: id, ...(snap as Snapshot) });
-        await this.db.drafts.add({
-          v: 1,
-          id,
-          createdAt: rec.createdAt,
-          updatedAt: rec.updatedAt,
-          meta,
-          sessions: rec.sessions.map(({ opIndex, at, tzOffset }) => ({ opIndex, at, tzOffset })),
-          head: d.ops.length,
-          epoch: newEpoch(),
-        });
-        await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: id, seq, op })));
-        if (snaps.length) await this.db.snapshots.bulkAdd(snaps);
+        (texts as Set<string> | null)?.add(p.text);
+        await this.addImported(p, id, suffix);
       }
       for (const { key, B, peak, resetOffset } of data.days)
         if (!(await this.db.days.get(key))) await this.db.days.add({ key, B, peak, resetOffset });
       return r;
     });
+  }
+
+  async exportDraft(id: string): Promise<BackupDraft | null> {
+    return this.db.transaction('r', [this.db.drafts, this.db.ops, this.db.snapshots], async () => {
+      const record = await this.db.drafts.get(id);
+      if (!record) return null;
+      const [rows, base] = await Promise.all([
+        this.db.ops.where('[draftId+seq]').between([id, 0], [id, record.head], true, false).toArray(),
+        this.db.snapshots.get([id, 0]),
+      ]);
+      // like a backup: only the base snapshot travels; the importer rebuilds the rest
+      return { record, ops: rows.map((r) => r.op), snapshots: base ? [{ opIndex: 0, text: base.text }] : [] };
+    });
+  }
+
+  async importDraft(draft: BackupDraft): Promise<DraftImport> {
+    const p = prepareImport(draft);
+    if (!p) return { status: 'damaged' };
+    return this.db.transaction('rw', [this.db.drafts, this.db.ops, this.db.snapshots], async () => {
+      const id = draft.record.id;
+      if (await this.db.drafts.get(id)) {
+        if (await this.holdsHistory(id, draft.ops, p.base?.text ?? '')) return { id, status: 'existing' } as const;
+        const copy = crypto.randomUUID();
+        await this.addImported(p, copy, ' (from file)');
+        return { id: copy, status: 'copy' } as const;
+      }
+      await this.addImported(p, id, '');
+      return { id, status: 'added' } as const;
+    });
+  }
+
+  /** Write one replayed draft under `id`, from known fields only (unknown keys never reach storage). */
+  private async addImported(p: Prepared, id: string, titleSuffix: string): Promise<void> {
+    const { d, base, text, snap } = p;
+    const rec = d.record;
+    const meta = deriveMeta(text);
+    const snaps: SnapRow[] = base ? [{ draftId: id, opIndex: 0, text: base.text }] : [];
+    if (snap) snaps.push({ draftId: id, ...snap });
+    await this.db.drafts.add({
+      v: 1,
+      id,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+      meta: titleSuffix ? { ...meta, title: `${meta.title}${titleSuffix}` } : meta,
+      sessions: rec.sessions.map(({ opIndex, at, tzOffset }) => ({ opIndex, at, tzOffset })),
+      head: d.ops.length,
+      epoch: newEpoch(),
+    });
+    await this.db.ops.bulkAdd(d.ops.map((op, seq) => ({ draftId: id, seq, op })));
+    if (snaps.length) await this.db.snapshots.bulkAdd(snaps);
+  }
+
+  /** The local draft's history already holds the file's: the same base and the file's ops as its first ops. */
+  private async holdsHistory(id: string, ops: Op[], base: string): Promise<boolean> {
+    const rec = await this.db.drafts.get(id);
+    if (!rec || rec.head < ops.length) return false;
+    if (((await this.db.snapshots.get([id, 0]))?.text ?? '') !== base) return false;
+    if (!ops.length) return true;
+    const local = await this.db.ops.where('[draftId+seq]').between([id, 0], [id, ops.length], true, false).toArray();
+    return local.length === ops.length && local.every((row, i) => JSON.stringify(row.op) === JSON.stringify(ops[i]));
   }
 
   /**

@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { invoke, flushOpenDrafts } = vi.hoisted(() => ({
+const { invoke, flushOpenDrafts, addFlusher } = vi.hoisted(() => ({
   invoke: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
   flushOpenDrafts: vi.fn(async () => true),
+  addFlusher: vi.fn(),
 }));
 vi.mock('@tauri-apps/api/core', () => ({ invoke }));
-vi.mock('../storage/lifecycle', () => ({ flushOpenDrafts }));
+vi.mock('../storage/lifecycle', () => ({ flushOpenDrafts, addFlusher }));
+const { getDesktop } = await import('../ui/desktopBridge');
 
 const { beforeQuit, startDesktop, showQuitNotice, SAVE_BEFORE_QUIT_MS, QUIT_NOTICE_MS, QUIT_NOTICE_TEXT } = await import('./desktop');
 
@@ -91,9 +93,16 @@ describe('desktop: save before quitting', () => {
     expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: false });
   });
 
-  it('startDesktop installs the hook the native side calls', async () => {
-    const target = {} as Window;
+  it('startDesktop installs the hooks the native side calls, the file bridge, and a quit flusher for linked files', async () => {
+    const target = { addEventListener: vi.fn(), document } as unknown as Window;
     startDesktop(target);
+    expect(getDesktop()).not.toBeNull();
+    expect(typeof target.__kansoOpened).toBe('function');
+    expect(typeof target.__kansoMenu).toBe('function');
+    // flushOpenDrafts (the quit path) waits for linked files too
+    expect(addFlusher).toHaveBeenCalledOnce();
+    await expect((addFlusher.mock.calls[0] as unknown as [() => Promise<boolean>])[0]()).resolves.toBe(true);
+    expect(target.addEventListener).toHaveBeenCalledWith('focus', expect.any(Function));
     target.__kansoBeforeQuit!();
     await vi.advanceTimersByTimeAsync(500);
     expect(invoke).toHaveBeenCalledWith('quit_ready', { saved: true });

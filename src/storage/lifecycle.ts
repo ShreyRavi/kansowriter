@@ -35,6 +35,15 @@ export async function flushOpenDrafts(): Promise<boolean> {
   return saved.every(Boolean);
 }
 
+/**
+ * Something else flushOpenDrafts must wait for (the macOS app's linked files): `flush` resolves
+ * true when nothing of its own is left unsaved. Returns the unregister function.
+ */
+export function addFlusher(flush: () => Promise<boolean>): () => void {
+  flushers.add(flush);
+  return () => flushers.delete(flush);
+}
+
 export function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
 }

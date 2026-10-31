@@ -110,17 +110,29 @@ export function loadText(view: EditorView, text: string): void {
  * change and the scroll position stays: a tab following another tab's commits isn't yanked.
  */
 export function followText(view: EditorView, text: string): void {
-  const cur = view.state.doc.toString();
-  if (cur === text) return;
+  const change = smallestChange(view.state.doc.toString(), text);
+  if (!change) return;
+  view.dispatch({ changes: change, annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)] });
+}
+
+/** The one change (common prefix and suffix kept) that turns `cur` into `text`; null when equal. */
+export function smallestChange(cur: string, text: string): { from: number; to: number; insert: string } | null {
+  if (cur === text) return null;
   const max = Math.min(cur.length, text.length);
   let start = 0;
   while (start < max && cur.charCodeAt(start) === text.charCodeAt(start)) start++;
   let end = 0;
   while (end < max - start && cur.charCodeAt(cur.length - 1 - end) === text.charCodeAt(text.length - 1 - end)) end++;
-  view.dispatch({
-    changes: { from: start, to: cur.length - end, insert: text.slice(start, text.length - end) },
-    annotations: [notRecorded.of(true), Transaction.addToHistory.of(false)],
-  });
+  return { from: start, to: cur.length - end, insert: text.slice(start, text.length - end) };
+}
+
+/**
+ * Turn the text into `text` as a normal recorded edit (the smallest single change; undoable,
+ * in the history and the replay): the macOS app taking a linked file's change made elsewhere.
+ */
+export function replaceRecorded(view: EditorView, text: string): void {
+  const change = smallestChange(view.state.doc.toString(), text);
+  if (change) view.dispatch({ changes: change, userEvent: 'input.file' });
 }
 
 export { setFocusMode };

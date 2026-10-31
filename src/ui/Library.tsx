@@ -5,6 +5,7 @@ import { StoreProvider, useStore } from './store';
 import { Landing } from './Landing';
 import { EditorShell, type LeaveGuard } from './EditorShell';
 import { requestPersistence } from './platform';
+import { getDesktop } from './desktopBridge';
 
 type Route = { name: 'boot' } | { name: 'landing' } | { name: 'editor'; draftId: string };
 
@@ -51,6 +52,22 @@ function Router({ initial }: { initial: DraftRecord[] }) {
     if (location.pathname !== '/') history.pushState(null, '', '/');
     setRoute({ name: 'editor', draftId });
   }, []);
+
+  // macOS: files opened from Finder, the Dock or File > Open… land here (through the unsaved-words guard)
+  useEffect(
+    () =>
+      getDesktop()?.attachHost({
+        storage,
+        open: (id) => {
+          const guard = guardRef.current;
+          if (guard) void guard(() => openDraft(id));
+          else openDraft(id);
+        },
+        refreshDrafts,
+        broadcast,
+      }),
+    [storage, refreshDrafts, broadcast, openDraft],
+  );
 
   const createDraft = useCallback(
     async (title?: string) => {

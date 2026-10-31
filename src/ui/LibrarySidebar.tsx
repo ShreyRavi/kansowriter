@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from './store';
 import { daysSince, isSafariNotInstalled, when } from './platform';
-import { CloseIcon, PlusIcon, SearchIcon } from './icons';
+import { CloseIcon, FileIcon, PlusIcon, SearchIcon } from './icons';
+import { getDesktop } from './desktopBridge';
 import { useDialog } from './useDialog';
 
 interface Props {
@@ -34,6 +35,16 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
       alive = false;
     };
   }, [q, bodies.size, drafts, storage]);
+
+  // macOS: drafts linked to a Markdown file get a small file glyph (none on the web)
+  const [linked, setLinked] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    const desktop = getDesktop();
+    if (!desktop) return;
+    const read = () => setLinked(new Set(drafts.filter((d) => desktop.linkedPath(d.id)).map((d) => d.id)));
+    read();
+    return desktop.subscribe(read);
+  }, [drafts]);
 
   const needle = q.trim().toLowerCase();
   const list = useMemo(
@@ -122,7 +133,14 @@ export function LibrarySidebar({ currentId, onClose, onOpen, onNew, onExportAll 
           {list.map((d) => (
             <button key={d.id} type="button" className="draft-row" aria-current={d.id === currentId} onClick={() => onOpen(d.id)}>
               <span className="row1">
-                <span className="t">{highlight(d.meta.title)}</span>
+                <span className="t">
+                  {linked.has(d.id) && (
+                    <span className="linked" role="img" aria-label="Linked to a file">
+                      <FileIcon />
+                    </span>
+                  )}
+                  {highlight(d.meta.title)}
+                </span>
                 <span className="when">{when(d.updatedAt)}</span>
               </span>
               {d.meta.excerpt && <span className="ex">{d.meta.excerpt}</span>}

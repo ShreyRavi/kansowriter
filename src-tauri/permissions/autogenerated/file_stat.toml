@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-file-stat"
+description = "Enables the file_stat command without any pre-configured scope."
+commands.allow = ["file_stat"]
+
+[[permission]]
+identifier = "deny-file-stat"
+description = "Denies the file_stat command without any pre-configured scope."
+commands.deny = ["file_stat"]

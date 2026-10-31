@@ -13,7 +13,7 @@ import {
 } from 'react';
 import type { EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
-import { createEditor, followText, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
+import { createEditor, followText, loadText, replaceRecorded, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
 import { attachDraftSession, channel, FOLLOW_COALESCE_MS, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
 import { DamagedDraftError, openDraftWriter, type DraftWriter } from '../storage/writer';
 import { deriveMeta, renameChange, type DraftRecord } from '../core/draft';
@@ -24,7 +24,8 @@ import { TYPEFACES, resolveTheme } from './settings';
 import type { PaletteActions } from './paletteActions';
 import { LibrarySidebar } from './LibrarySidebar';
 import { download, isMac, requestPersistence, safeFileName } from './platform';
-import { exportAll, importBackup } from './backupActions';
+import { downloadKanso, exportAll, exportKanso, importBackup } from './backupActions';
+import { displayPath, getDesktop, type EditorLink, type FileNotice } from './desktopBridge';
 import { applyUpdate, useUpdateReady } from './updates';
 import { CloseIcon, EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, SearchIcon, SunIcon } from './icons';
 import { setUnsavedProvider } from './unsaved';
@@ -141,6 +142,19 @@ type NoticeState =
   | { kind: 'open-error' }
   | null;
 
+/** The draft's linked file (macOS), kept current as links change; null on the web. */
+function useLinkedPath(draftId: string): string | null {
+  const desktop = getDesktop();
+  const [path, setPath] = useState(() => desktop?.linkedPath(draftId) ?? null);
+  useEffect(() => {
+    if (!desktop) return;
+    const read = () => setPath(desktop.linkedPath(draftId));
+    read();
+    return desktop.subscribe(read);
+  }, [desktop, draftId]);
+  return path;
+}
+
 interface Props {
   draftId: string;
   onOpen(id: string): void;
@@ -160,6 +174,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const sessionRef = useRef<SessionHandle | null>(null);
   const [title, setTitle] = useState('');
   const [notice, setNotice] = useState<NoticeState>(null);
+  /** macOS: the linked file's problem, below every saving notice (the draft itself is always saved) */
+  const [fileNote, setFileNote] = useState<FileNotice | null>(null);
+  const linkRef = useRef<EditorLink | null>(null);
+  const linkedPath = useLinkedPath(draftId);
+  const desktop = getDesktop();
   const [copyLabel, setCopyLabel] = useState<string | null>(null);
   const [chromeVisible, setChromeVisible] = useState(true);
   const [sidebar, setSidebar] = useState(false);
@@ -237,12 +256,37 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         readOnly: true,
         focus: settingsRef.current.focus,
         typewriter: settingsRef.current.typewriter,
-        onChange: (c) => writerRef.current?.push(c),
+        onChange: (c) => {
+          writerRef.current?.push(c);
+          linkRef.current?.changed();
+        },
         onActivity: () => activity(),
         onUpdate: onEditorUpdate,
       });
       viewRef.current = view;
       onEditorUpdate(view.state);
+      // macOS: a draft linked to a Markdown file keeps it in step (the view object is captured, so
+      // the last write after a switch still reads the text this editor showed)
+      linkRef.current =
+        getDesktop()?.attachEditor({
+          draftId,
+          text: () => view.state.doc.toString(),
+          writable: () => !!writerRef.current && !staleRef.current && viewRef.current === view,
+          replaceText: (text) => {
+            if (!writerRef.current || staleRef.current || viewRef.current !== view) return false;
+            replaceRecorded(view, text);
+            return view.state.doc.toString() === text;
+          },
+          editedSince: (at) => {
+            const w = writerRef.current;
+            return !!w && (w.dirty || w.draft.updatedAt > at);
+          },
+          fileNotice: (n) => {
+            setFileNote(n);
+            if (n) setChromeVisible(true);
+          },
+          exportKanso: () => exportKansoRef.current(),
+        }) ?? null;
 
       const events = {
         onStale: (text: string) => {
@@ -315,6 +359,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             setReadOnly(view, false);
             setNotice((n) => (n?.kind === 'readonly' ? null : n));
             view.focus();
+            // the file may have changed on disk while the draft was closed
+            linkRef.current?.check();
           },
           onReadOnly: (reason, error) => {
             writerRef.current = null;
@@ -353,6 +399,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     return () => {
       disposed = true;
       if (commitTimer) clearTimeout(commitTimer);
+      linkRef.current?.dispose();
+      linkRef.current = null;
+      setFileNote(null);
       const s = sessionRef.current;
       sessionRef.current = null;
       writerRef.current = null;
@@ -491,6 +540,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     [storage, draftId],
   );
 
+  /** the draft with its whole history as a .kanso: a download on the web, a save panel on macOS */
+  const saveKansoFile = useCallback(
+    () => exportKanso(storage, draftId, writerRef.current, desktop ? (name, bytes) => desktop.saveKanso(name, bytes) : downloadKanso),
+    [storage, draftId, desktop],
+  );
+  const exportKansoRef = useRef(saveKansoFile);
+  exportKansoRef.current = saveKansoFile;
+
   const toggleTheme = useCallback(() => {
     update({ theme: resolveTheme(settingsRef.current.theme) === 'night' ? 'paper' : 'night' });
   }, [update]);
@@ -553,8 +610,17 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           void requestPersistence();
           broadcast({ type: 'library' }); // other tabs reread their draft lists
         }
+        // a .kanso opens its draft (the one already here, or the one just added)
+        const open = r?.openId;
+        if (open && open !== draftId) {
+          setPalette(false);
+          void leaveRef.current(() => onOpen(open));
+        }
         return r?.label ?? null;
       },
+      exportKanso: saveKansoFile,
+      saveToFile: desktop ? () => desktop.saveToFile(draftId) : undefined,
+      makeDefault: desktop ? () => desktop.makeDefault() : undefined,
       clearHistory: async () => {
         // a storage error (IndexedDB down) answers in the row instead of leaving "Clearing…"
         const ok = await (sessionRef.current?.clearHistory() ?? Promise.resolve(false)).catch(() => null);
@@ -578,6 +644,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
           return 'Couldn’t delete. Try again';
         }
         broadcast({ type: 'deleted', draftId }); // a tab showing it read-only moves on
+        void desktop?.draftDeleted(draftId).catch(() => {});
         setPalette(false);
         onDeleted();
         return null;
@@ -594,7 +661,21 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         return 'Reset';
       },
     }),
-    [openSend, onNew, exportText, storage, update, refreshDrafts, draftId, onDeleted, refreshToday, broadcast],
+    [
+      openSend,
+      onNew,
+      onOpen,
+      exportText,
+      saveKansoFile,
+      desktop,
+      storage,
+      update,
+      refreshDrafts,
+      draftId,
+      onDeleted,
+      refreshToday,
+      broadcast,
+    ],
   );
 
   // ---------- leaving with unsaved text ----------
@@ -740,7 +821,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       vv?.removeEventListener('scroll', place);
       window.removeEventListener('resize', place);
     };
-  }, [showDock, notice, showUpdate, chunkFailed]);
+  }, [showDock, notice, fileNote, showUpdate, chunkFailed]);
 
   // ---------- shortcuts ----------
   useEffect(() => {
@@ -808,12 +889,20 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
 
   return (
     <div className="shell" style={shellStyle}>
-      <header className={`header ui ${chromeClass}`} onFocus={reveal}>
+      {/* macOS: the header is the window's title bar (drag it; double-click zooms; buttons stay buttons) */}
+      <header className={`header ui ${chromeClass}`} onFocus={reveal} data-tauri-drag-region={desktop ? 'deep' : undefined}>
         <div className="left">
           <button type="button" className="icon-btn" aria-label="Open drafts" data-tip="Drafts" onClick={() => setSidebar(true)}>
             <MenuIcon />
           </button>
-          <span className="title">{title || 'Untitled'}</span>
+          {linkedPath ? (
+            // a draft linked to a Markdown file shows where it lives on hover, nothing more
+            <span className="title-wrap" data-tip={displayPath(linkedPath)}>
+              <span className="title">{title || 'Untitled'}</span>
+            </span>
+          ) : (
+            <span className="title">{title || 'Untitled'}</span>
+          )}
         </div>
         {!docked && <FormatToolbar variant="bar" formats={formats} disabled={!canFormat} run={runFormat} focusText={focusText} />}
         <div className="right">
@@ -881,7 +970,45 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             <div style={{ width: `${pct}%` }} />
           </div>
         )}
-        {!notice && showUpdate && !staleRef.current && (
+        {!notice && fileNote && (
+          // macOS, the linked file: below every saving notice, above the update notice
+          <div className="notice" role="status">
+            {fileNote.kind === 'file-conflict' && (
+              <>
+                <span>This file changed outside Kansowriter.</span>
+                <span className="actions">
+                  <button type="button" className="text-btn" onClick={() => linkRef.current?.useFile()}>
+                    Use the file’s version
+                  </button>
+                  <button type="button" className="text-btn" onClick={() => linkRef.current?.keepMine()}>
+                    Keep mine
+                  </button>
+                </span>
+              </>
+            )}
+            {(fileNote.kind === 'file-missing' || fileNote.kind === 'file-unwritable') && (
+              <>
+                <span>
+                  {fileNote.kind === 'file-missing'
+                    ? 'The linked file was moved or deleted. Your draft is safe here.'
+                    : 'Couldn’t save to the linked file. Your draft is safe here.'}
+                </span>
+                <button
+                  type="button"
+                  className="text-btn"
+                  onClick={() =>
+                    void desktop?.saveToFile(draftId).then((label) => {
+                      if (label?.startsWith('Couldn')) setFileNote({ kind: 'file-unwritable' });
+                    })
+                  }
+                >
+                  Save to file…
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {!notice && !fileNote && showUpdate && !staleRef.current && (
           // lowest priority (R11): a new version waits; only this click reloads. Once shown it stays
           // (no flicker while typing): leave() still keeps unsaved words from being reloaded away
           <div className="notice" role="status">
@@ -891,7 +1018,7 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             </button>
           </div>
         )}
-        {!notice && !(showUpdate && !staleRef.current) && chunkFailed && (
+        {!notice && !fileNote && !(showUpdate && !staleRef.current) && chunkFailed && (
           // lowest priority: below the update notice, whose Reload brings the new chunks too
           <div className="notice" role="status">
             <span>Couldn’t open {chunkFailed}. Reload to update</span>

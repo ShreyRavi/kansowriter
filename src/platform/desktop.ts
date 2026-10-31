@@ -1,5 +1,8 @@
 import { invoke } from '@tauri-apps/api/core';
-import { flushOpenDrafts } from '../storage/lifecycle';
+import { addFlusher, flushOpenDrafts } from '../storage/lifecycle';
+import { setDesktop } from '../ui/desktopBridge';
+import { createDesktopFiles } from './desktopFiles';
+import type { FileOps, FileStat } from './fileSync';
 
 /**
  * The macOS app (Tauri, `vite build --mode desktop`). Only loaded in that build: the web app
@@ -76,9 +79,39 @@ export async function beforeQuit(
 declare global {
   interface Window {
     __kansoBeforeQuit?: () => void;
+    /** files were handed to the app (Finder, Dock, `open -a`, File > Open…): src-tauri/src/main.rs */
+    __kansoOpened?: () => void;
+    /** a File menu item the page runs (Save to File…, Save as Kansowriter File) */
+    __kansoMenu?: (id: string) => void;
   }
 }
 
+/** The file commands (src-tauri/src/files.rs), on granted paths only. */
+export const fileOps: FileOps = {
+  stat: (path) => invoke<FileStat | null>('file_stat', { path }),
+  read: async (path) => new Uint8Array(await invoke<ArrayBuffer>('file_read', { path })),
+  // the bytes go as the raw body (no JSON number arrays for a large .kanso); the path in a header
+  // `expect`: what the page last saw; the write is refused ("changed") if the file moved on since
+  write: (path, bytes, expect) =>
+    invoke<FileStat>('file_write', bytes, {
+      headers: {
+        'x-kanso-path': encodeURIComponent(path),
+        ...(expect ? { 'x-kanso-expect': `${expect.mtime}:${expect.size}` } : {}),
+      },
+    }),
+};
+
 export function startDesktop(target: Window = window): void {
   target.__kansoBeforeQuit = () => void beforeQuit();
+  const files = createDesktopFiles(fileOps, (cmd, args) => invoke(cmd, args));
+  setDesktop(files);
+  // a quit waits for linked files too (flushOpenDrafts runs every flusher)
+  addFlusher(() => files.flush());
+  target.__kansoOpened = () => void files.opened();
+  target.__kansoMenu = (id) => void files.menu(id);
+  // edited elsewhere while Kansowriter was in the background: look when it comes back
+  target.addEventListener('focus', () => files.focused());
+  target.document.addEventListener('visibilitychange', () => {
+    if (target.document.visibilityState === 'visible') files.focused();
+  });
 }

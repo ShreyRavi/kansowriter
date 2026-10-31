@@ -7,9 +7,15 @@
 //!                                      key equivalents and user activation behave as for a person)
 //!   { do: [{ performClose: true }] }  [window performClose:], what ⌘W / the close button send
 //!   { terminate: true }                [NSApp terminate:], the path ⌘Q takes (polling goes on)
+//!   { menu: "open" | "save-file" | "save-kanso" }  a File menu item, as if clicked
+//!   { fullscreen: bool }               enter / leave full screen
+//!   { info: true }                     log { window: <windowNumber> } (for `screencapture -l`)
 //!   { done: true }                     stop polling
 //! After each message the loop clears `__kansoProbe` and calls `__kansoProbeAck()`.
-//! KANSO_DOWNLOAD_DIR moves downloads out of ~/Downloads. None of this exists in release builds.
+//! KANSO_DOWNLOAD_DIR moves downloads out of ~/Downloads; KANSO_PROBE_SAVE_DIR answers save panels
+//! with <dir>/<suggested name> and KANSO_PROBE_OPEN_PATH answers File > Open… (main.rs);
+//! KANSO_LS_DRY_RUN / KANSO_LS_TYPES keep "make default" off the person's real defaults
+//! (default_app.rs, main.rs). None of this exists in release builds.
 use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -18,8 +24,7 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSWindow};
 use objc2_foundation::{NSPoint, NSProcessInfo, NSString};
 use serde_json::Value;
-use tauri::webview::PageLoadEvent;
-use tauri::{AppHandle, WebviewWindow, WebviewWindowBuilder, Wry};
+use tauri::{Manager, WebviewWindow, Wry};
 
 pub fn redirect_download(destination: &mut PathBuf) {
     if let (Ok(dir), Some(name)) = (std::env::var("KANSO_DOWNLOAD_DIR"), destination.file_name()) {
@@ -126,16 +131,14 @@ fn perform(window: &WebviewWindow<Wry>, actions: Vec<Value>) {
     let _ = rx.recv_timeout(Duration::from_secs(10));
 }
 
-pub fn attach(builder: WebviewWindowBuilder<'_, Wry, AppHandle>) -> WebviewWindowBuilder<'_, Wry, AppHandle> {
+/// After each page load (main.rs calls this): run the KANSO_PROBE script and answer its messages.
+pub fn page_loaded(window: WebviewWindow<Wry>) {
     let Ok(script_path) = std::env::var("KANSO_PROBE") else {
-        return builder;
+        return;
     };
     let script = std::fs::read_to_string(&script_path).expect("KANSO_PROBE script");
     let out = std::env::var("KANSO_PROBE_OUT").unwrap_or_else(|_| format!("{script_path}.out.jsonl"));
-    builder.on_page_load(move |window, payload| {
-        if payload.event() != PageLoadEvent::Finished {
-            return;
-        }
+    {
         // in front, so WebKit renders and runs it unthrottled, as for someone using it
         let _ = window.set_focus();
         let _ = window.eval(script.clone());
@@ -171,10 +174,25 @@ pub fn attach(builder: WebviewWindowBuilder<'_, Wry, AppHandle>) -> WebviewWindo
                     });
                     // keep listening: a quit the app refuses (unsaved words) leaves the page running
                 }
+                if let Some(id) = msg.get("menu").and_then(Value::as_str) {
+                    // a File menu item, as if clicked
+                    let (app, id) = (window.app_handle().clone(), id.to_string());
+                    let _ = window.run_on_main_thread(move || crate::on_menu(&app, &id));
+                }
+                if let Some(on) = msg.get("fullscreen").and_then(Value::as_bool) {
+                    let _ = window.set_fullscreen(on);
+                }
+                if flag(&msg, "info") {
+                    let number = window.ns_window().map(|w| {
+                        // SAFETY: tauri hands out this webview window's live NSWindow
+                        unsafe { &*(w as *const NSWindow) }.windowNumber()
+                    });
+                    append(&out, &serde_json::json!({ "window": number.unwrap_or(0) }).to_string());
+                }
                 if flag(&msg, "done") {
                     return;
                 }
             }
         });
-    })
+    }
 }
