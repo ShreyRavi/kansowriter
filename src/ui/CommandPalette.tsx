@@ -7,6 +7,7 @@ import { SearchIcon } from './icons';
 import { useDialog } from './useDialog';
 import type { FocusMode } from '../editor/focus';
 import type { PaletteActions } from './paletteActions';
+import { SOURCE_URL, VERSION_LABEL } from '../version';
 
 const THEME_LABELS: Record<ThemeChoice, string> = { system: 'System', paper: 'Light', night: 'Dark' };
 type Expandable = 'theme' | 'typeface' | 'hide';
@@ -399,6 +400,18 @@ export function CommandPalette({
               ) : (
                 <Item label="Delete draft" value={labels.delete || ''} onSelect={() => setConfirm('delete')} />
               )}
+            </Command.Group>
+
+            <Command.Group heading="About">
+              {/* the version, and the source on GitHub (the desktop app opens it in the browser) */}
+              <Command.Item
+                value="About Kansowriter"
+                keywords={['version', 'source', 'github', 'commit']}
+                onSelect={() => void window.open(SOURCE_URL, '_blank', 'noopener')}
+              >
+                <span>About Kansowriter</span>
+                <Val value={`${VERSION_LABEL} · Source`} />
+              </Command.Item>
             </Command.Group>
           </Command.List>
         </Command>
