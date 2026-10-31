@@ -1,8 +1,24 @@
+import { execFileSync } from 'node:child_process';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { THEME_COLOR } from './src/ui/theme-colors';
 import { LETTER_FILE_EXTENSION, LETTER_MIME } from './src/core/letter';
+import { resolveCommitSha } from './src/version';
+
+/**
+ * The commit this build is from (src/version.ts): Vercel's git deployments set
+ * VERCEL_GIT_COMMIT_SHA; a local build asks git; a build with neither (no .git, e.g. files
+ * uploaded by `vercel deploy`) is 'dev' and shows no commit link.
+ */
+function gitHead(): string | undefined {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  } catch {
+    return undefined;
+  }
+}
+const COMMIT_SHA = resolveCommitSha(process.env.VERCEL_GIT_COMMIT_SHA, gitHead());
 
 /**
  * Two builds of one app: the web app (dist/web, deployed by Vercel) and the macOS desktop app's
@@ -11,6 +27,7 @@ import { LETTER_FILE_EXTENSION, LETTER_MIME } from './src/core/letter';
  */
 export default defineConfig(({ mode }) => ({
   build: { outDir: mode === 'desktop' ? 'src-tauri/target/frontend' : 'dist/web' },
+  define: { __COMMIT_SHA__: JSON.stringify(COMMIT_SHA) },
   plugins: [
     react(),
     VitePWA({
@@ -25,6 +42,8 @@ export default defineConfig(({ mode }) => ({
         skipWaiting: false,
         clientsClaim: false,
         globPatterns: ['**/*.{js,css,html,woff2,svg,png,ico,webmanifest}'],
+        // the homepage demo (video, poster, screenshots) loads from the network when in view, never precached
+        globIgnores: ['**/node_modules/**/*', 'sw.js', 'workbox-*.js', '**/demo-*'],
         navigateFallback: '/index.html',
         // A letter link must open the reader of the app as deployed now, not whatever shell this
         // device cached: /l never takes the precached fallback; it goes to the network first and

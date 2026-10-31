@@ -18,6 +18,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "measure:letters": "tsx scripts/measure-letters.ts",
+    "record:demo": "tsx scripts/record-demo.ts",
     "desktop:frontend": "npm run tokens && tsc -p tsconfig.json && vite build --mode desktop",
     "desktop:frontend:dev": "vite --mode desktop --port 5173 --strictPort",
     "desktop:dev": "tauri dev",

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { importBackup } from './backupActions';
+import { LandingDemo } from './LandingDemo';
+import { SOURCE_URL, VERSION, VERSION_LABEL } from '../version';
 
 const LINE = 'A quiet place to write.';
 const TYPED_KEY = 'kansowriter-landing-typed';
@@ -97,6 +99,7 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
           </div>
         )}
       </section>
+      <LandingDemo />
       <section className="points" aria-label="About Kansowriter">
         <p>The interface hides while you type.</p>
         <p>A thin line fills as you reach your daily word goal.</p>
@@ -104,6 +107,18 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
       </section>
       <footer>
         <span>writer.kansoboard.com</span>
+        <span aria-hidden="true">·</span>
+        {VERSION.commitUrl ? (
+          <a href={VERSION.commitUrl} target="_blank" rel="noopener">
+            {VERSION_LABEL}
+          </a>
+        ) : (
+          <span>{VERSION_LABEL}</span>
+        )}
+        <span aria-hidden="true">·</span>
+        <a href={SOURCE_URL} target="_blank" rel="noopener">
+          Source
+        </a>
       </footer>
     </main>
   );
