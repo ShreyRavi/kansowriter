@@ -1,4 +1,17 @@
-import { Component, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import {
+  Component,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
+import type { EditorState } from '@codemirror/state';
 import type { EditorView } from '@codemirror/view';
 import { createEditor, followText, loadText, setFocusMode, setReadOnly, setTypewriter } from '../editor/setup';
 import { attachDraftSession, channel, FOLLOW_COALESCE_MS, type ChannelMessage, type SessionHandle } from '../storage/lifecycle';
@@ -17,6 +30,28 @@ import { CloseIcon, EnvelopeIcon, FocusIcon, MenuIcon, MoonIcon, MoreIcon, Searc
 import { setUnsavedProvider } from './unsaved';
 import { useScrollLock } from './scrollLock';
 import { useDialog } from './useDialog';
+import { activeFormats, NO_FORMATS, sameFormats, setParagraphCommand, type ActiveFormats } from '../editor/format';
+import { SHORTCUTS, type FormatId } from '../editor/keys';
+import { FormatToolbar } from './FormatToolbar';
+
+/**
+ * Where the formatting toolbar lives: the header on desktop; on phones (and narrow windows, small
+ * touch tablets, landscape phones) a row docked above the on-screen keyboard while the text has focus.
+ */
+const DOCK_QUERY = '(max-width: 799px), (pointer: coarse) and (max-width: 1023px), (pointer: coarse) and (max-height: 500px)';
+
+function useMedia(query: string): boolean {
+  const [on, setOn] = useState(() => typeof matchMedia === 'function' && matchMedia(query).matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia(query);
+    const onChange = () => setOn(m.matches);
+    onChange();
+    m.addEventListener('change', onChange);
+    return () => m.removeEventListener('change', onChange);
+  }, [query]);
+  return on;
+}
 
 /** typing pause before the update notice may first appear while the chrome is faded */
 const UPDATE_IDLE_MS = 3000;
@@ -74,7 +109,14 @@ function SendLoading({ onClose }: { onClose(): void }) {
     <div className="send-wrap" role="dialog" aria-modal="true" aria-labelledby="send-title" ref={ref}>
       <div className="send-top ui">
         <h2 id="send-title">Send as letter</h2>
-        <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>
+        <button
+          type="button"
+          className="icon-btn"
+          aria-label="Close"
+          data-tip={`Close Esc · ${isMac() ? '⌘' : 'Ctrl '}⇧L`}
+          data-tip-align="end"
+          onClick={onClose}
+        >
           <CloseIcon />
         </button>
       </div>
@@ -150,6 +192,28 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
   const leaveRef = useRef<LeaveGuard>(async (go) => (go(), true));
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+  /** the formatting toolbar: what the caret sits in, and whether the text can be changed here at all */
+  const [formats, setFormats] = useState<ActiveFormats>(NO_FORMATS);
+  const [canFormat, setCanFormat] = useState(false);
+  const formatFrame = useRef(0);
+  const formatState = useRef<EditorState | null>(null);
+  /** coalesced to one look per frame: typing never waits on it */
+  const onEditorUpdate = useCallback((state: EditorState) => {
+    formatState.current = state;
+    if (formatFrame.current) return;
+    formatFrame.current = requestAnimationFrame(() => {
+      formatFrame.current = 0;
+      const s = formatState.current;
+      if (!s) return;
+      setCanFormat(!s.readOnly);
+      const f = activeFormats(s);
+      setFormats((prev) => (sameFormats(prev, f) ? prev : f));
+    });
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(formatFrame.current), []);
+  const docked = useMedia(DOCK_QUERY);
+  const [textFocused, setTextFocused] = useState(false);
+  const dockRef = useRef<HTMLDivElement>(null);
 
   // ---------- editor + single-writer session ----------
   useEffect(() => {
@@ -175,8 +239,10 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         typewriter: settingsRef.current.typewriter,
         onChange: (c) => writerRef.current?.push(c),
         onActivity: () => activity(),
+        onUpdate: onEditorUpdate,
       });
       viewRef.current = view;
+      onEditorUpdate(view.state);
 
       const events = {
         onStale: (text: string) => {
@@ -296,6 +362,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
       });
       viewRef.current?.destroy();
       viewRef.current = null;
+      formatState.current = null;
+      setCanFormat(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftId, mountKey]);
@@ -618,6 +686,62 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     </button>
   );
 
+  // ---------- formatting toolbar ----------
+  const runFormat = useCallback((id: FormatId, mode?: 'set') => {
+    const view = viewRef.current;
+    if (!view || view.state.readOnly) return;
+    // the style menu sets a paragraph style; buttons toggle like their shortcuts
+    if (mode === 'set' && (id === 'title' || id === 'heading' || id === 'subheading' || id === 'normal')) setParagraphCommand(id)(view);
+    else SHORTCUTS[id].run(view);
+    // the text again (a keyboard press from the toolbar, or a click while the text wasn't focused)
+    if (!view.hasFocus) view.focus();
+  }, []);
+  const focusText = useCallback(() => viewRef.current?.focus(), []);
+  // the dock shows while the text (or the dock itself) has focus
+  useEffect(() => {
+    if (!docked) return;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const check = () => {
+      t = null;
+      const a = document.activeElement;
+      const view = viewRef.current;
+      setTextFocused(!!a && ((!!view && view.contentDOM.contains(a)) || !!dockRef.current?.contains(a)));
+    };
+    // focusout fires before the next element has focus: look once it has settled
+    const later = () => (t ??= setTimeout(check, 0));
+    document.addEventListener('focusin', check);
+    document.addEventListener('focusout', later);
+    check();
+    return () => {
+      if (t) clearTimeout(t);
+      document.removeEventListener('focusin', check);
+      document.removeEventListener('focusout', later);
+    };
+  }, [docked, mountKey]);
+  const showDock = docked && textFocused && !palette && !sidebar && !send;
+  // keep the dock on the visual viewport's bottom edge: above the keyboard when it is open, else above a notice
+  useLayoutEffect(() => {
+    const el = dockRef.current;
+    if (!showDock || !el) return;
+    const vv = window.visualViewport;
+    const place = () => {
+      const keyboard = vv ? Math.max(0, window.innerHeight - (vv.offsetTop + vv.height)) : 0;
+      const notice = keyboard < 1 ? (document.querySelector<HTMLElement>('.footer .notice')?.offsetHeight ?? 0) : 0;
+      // bottom, not a transform: a transformed dock would become the style menu's containing block
+      el.style.bottom = `${Math.round(keyboard + notice)}px`;
+      el.classList.toggle('over-keyboard', keyboard >= 1);
+    };
+    place();
+    vv?.addEventListener('resize', place);
+    vv?.addEventListener('scroll', place);
+    window.addEventListener('resize', place);
+    return () => {
+      vv?.removeEventListener('resize', place);
+      vv?.removeEventListener('scroll', place);
+      window.removeEventListener('resize', place);
+    };
+  }, [showDock, notice, showUpdate, chunkFailed]);
+
   // ---------- shortcuts ----------
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -672,6 +796,9 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     '--writing-line': String(face.line),
   } as CSSProperties;
   const night = resolveTheme(settings.theme) === 'night';
+  // header tooltips name each button and its shortcut (DESIGN.md: Tooltip)
+  const modLabel = isMac() ? '⌘' : 'Ctrl ';
+  const modKey = isMac() ? 'Meta' : 'Control';
   const chromeClass = `chrome${chromeVisible || palette || sidebar || send ? '' : ' hidden'}`;
   const closeOverlay = () => {
     setPalette(false);
@@ -683,16 +810,19 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
     <div className="shell" style={shellStyle}>
       <header className={`header ui ${chromeClass}`} onFocus={reveal}>
         <div className="left">
-          <button type="button" className="icon-btn" aria-label="Open drafts" onClick={() => setSidebar(true)}>
+          <button type="button" className="icon-btn" aria-label="Open drafts" data-tip="Drafts" onClick={() => setSidebar(true)}>
             <MenuIcon />
           </button>
           <span className="title">{title || 'Untitled'}</span>
         </div>
+        {!docked && <FormatToolbar variant="bar" formats={formats} disabled={!canFormat} run={runFormat} focusText={focusText} />}
         <div className="right">
           <button
             type="button"
             className="icon-btn hide-phone"
             aria-label={settings.focus === 'off' ? 'Turn on focus mode' : 'Turn off focus mode'}
+            aria-keyshortcuts={`${modKey}+Shift+P`}
+            data-tip={`Focus mode: ${settings.focus === 'off' ? 'off' : 'on'} ${modLabel}⇧P`}
             aria-pressed={settings.focus !== 'off'}
             onClick={() => update({ focus: settings.focus === 'off' ? 'paragraph' : 'off' })}
           >
@@ -702,6 +832,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             type="button"
             className="icon-btn hide-phone"
             aria-label={night ? 'Switch to paper theme' : 'Switch to night theme'}
+            aria-keyshortcuts={`${modKey}+Shift+N`}
+            data-tip={`${night ? 'Paper' : 'Night'} theme ${modLabel}⇧N`}
             onClick={toggleTheme}
           >
             {night ? <SunIcon /> : <MoonIcon />}
@@ -710,6 +842,8 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             type="button"
             className="icon-btn hide-phone"
             aria-label="Send as letter"
+            aria-keyshortcuts={`${modKey}+Shift+L`}
+            data-tip={`Send as letter ${modLabel}⇧L`}
             onPointerEnter={preloadSend}
             onFocus={preloadSend}
             onClick={() => void openSend('button')}
@@ -720,12 +854,14 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
             type="button"
             className="icon-btn palette-btn hide-phone"
             aria-label={`Open command palette ${isMac() ? '⌘K' : 'Ctrl K'}`}
+            aria-keyshortcuts={`${modKey}+K`}
+            data-tip={`Command palette ${modLabel}K`}
             onClick={() => setPalette(true)}
           >
             <SearchIcon />
             <span className="key">{isMac() ? '⌘K' : 'Ctrl K'}</span>
           </button>
-          <button type="button" className="icon-btn more" aria-label="Open commands" onClick={() => setPalette(true)}>
+          <button type="button" className="icon-btn more" aria-label="Open commands" data-tip="Commands" onClick={() => setPalette(true)}>
             <MoreIcon />
           </button>
         </div>
@@ -842,6 +978,11 @@ export function EditorShell({ draftId, onOpen, onNew, onDeleted, onGuard }: Prop
         )}
       </footer>
 
+      {showDock && (
+        <div className="format-dock ui" ref={dockRef} role="region" aria-label="Formatting">
+          <FormatToolbar variant="dock" formats={formats} disabled={!canFormat} run={runFormat} focusText={focusText} />
+        </div>
+      )}
       {sidebar && (
         <LibrarySidebar
           currentId={draftId}

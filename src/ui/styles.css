@@ -152,6 +152,12 @@ a:hover {
 .icon-btn:hover {
   color: var(--c-ink);
 }
+/* a header toggle that is on (focus mode): accent icon on a filled pill, unmistakably not "dim" */
+.header .right .icon-btn[aria-pressed='true'],
+.header .right .icon-btn[aria-pressed='true']:hover {
+  color: var(--c-accent);
+  background: var(--c-selected);
+}
 .key {
   border: 1px solid var(--c-hairline);
   border-radius: var(--rounded-key);
@@ -351,9 +357,15 @@ main.boot .unsaved-text {
   align-items: center;
   gap: 4px;
 }
+/* equal sides keep the formatting toolbar centred while there is room */
 .header .left {
+  flex: 1 1 0;
   gap: 12px;
   min-width: 0;
+}
+.header .right {
+  flex: 1 1 0;
+  justify-content: flex-end;
 }
 .header .title {
   color: var(--c-ink);
@@ -412,17 +424,17 @@ main.boot .unsaved-text {
   background: var(--c-selection) !important;
 }
 .cm-editor .cm-dim {
-  color: var(--c-muted);
+  color: var(--c-dim);
   transition: color 200ms ease-out;
 }
 .cm-editor .cm-h1 {
-  font-size: 1.62em;
+  font-size: var(--type-heading1);
   line-height: 1.2;
   font-weight: 500;
   letter-spacing: -0.01em;
 }
 .cm-editor .cm-h2 {
-  font-size: 1.3em;
+  font-size: var(--type-heading2);
   line-height: 1.3;
   font-weight: 500;
 }
@@ -431,6 +443,11 @@ main.boot .unsaved-text {
 .cm-editor .cm-h5,
 .cm-editor .cm-h6 {
   font-weight: 600;
+}
+/* Subheading reads as a heading, not bold body text */
+.cm-editor .cm-h3 {
+  font-size: var(--type-heading3);
+  line-height: 1.4;
 }
 .cm-editor .cm-em {
   font-style: italic;
@@ -456,6 +473,304 @@ main.boot .unsaved-text {
 }
 .cm-editor .cm-listmark {
   color: var(--c-muted);
+}
+.cm-editor .cm-bullet {
+  display: inline-block;
+  min-width: 0.6em;
+}
+.cm-editor .cm-strike {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.cm-editor .cm-u {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-thickness: 1px;
+}
+.cm-editor .cm-strike .cm-u,
+.cm-editor .cm-u .cm-strike {
+  text-decoration: underline line-through;
+}
+/* checklist box (hybrid.ts): drawn in place of "[ ]" off the caret line */
+.cm-editor .cm-task {
+  display: inline-block;
+  box-sizing: border-box;
+  width: var(--space-check-box);
+  height: var(--space-check-box);
+  margin-right: 0.45em;
+  border: 1.5px solid var(--c-muted);
+  border-radius: var(--rounded-row);
+  vertical-align: -0.1em;
+  cursor: pointer;
+  position: relative;
+}
+.cm-editor .cm-task[aria-readonly='true'] {
+  cursor: default;
+}
+.cm-editor .cm-task.cm-task-checked {
+  background: var(--c-ink);
+  border-color: var(--c-ink);
+}
+.cm-editor .cm-task.cm-task-checked::after {
+  content: '';
+  position: absolute;
+  left: 30%;
+  top: 12%;
+  width: 28%;
+  height: 52%;
+  border: solid var(--c-ground);
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
+}
+/* a thumb-sized hit area around the box, drawn no bigger */
+@media (pointer: coarse) {
+  .cm-editor .cm-task::before {
+    content: '';
+    position: absolute;
+    inset: -12px;
+  }
+}
+.cm-editor .cm-task-done {
+  color: var(--c-muted);
+}
+
+/* ---------- tooltips: header and toolbar buttons (data-tip) ----------
+ * The button's aria-label stays its accessible name; the tip is the visible name plus its shortcut.
+ * Hover or keyboard focus, after a short delay so passing over the bar never flashes them; none on touch. */
+[data-tip] {
+  position: relative;
+}
+@media (hover: hover) and (pointer: fine) {
+  [data-tip]::after {
+    content: attr(data-tip);
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    padding: 4px 8px;
+    border-radius: var(--rounded-row);
+    background: var(--c-ink);
+    color: var(--c-ground);
+    font-family: var(--type-sans);
+    font-size: var(--type-ui-small);
+    font-weight: 400;
+    font-style: normal;
+    line-height: 1.4;
+    letter-spacing: 0;
+    text-decoration: none;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity var(--motion-tooltip-fade) ease-out;
+  }
+  [data-tip]:hover::after,
+  [data-tip]:focus-visible::after {
+    opacity: 1;
+    transition-delay: var(--motion-tooltip-delay);
+  }
+  /* at the window's edges the tip lines up with its button instead of centring on it */
+  .header .left [data-tip]::after {
+    left: 0;
+    transform: none;
+  }
+  .header .right [data-tip]::after,
+  [data-tip-align='end']::after {
+    left: auto;
+    right: 0;
+    transform: none;
+  }
+}
+
+/* ---------- formatting toolbar (FormatToolbar.tsx) ---------- */
+.format-bar {
+  display: flex;
+  align-items: center;
+  flex: none;
+}
+.format-bar .tb-item {
+  display: inline-flex;
+  align-items: center;
+}
+.format-bar .tb-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--c-hairline);
+}
+.format-bar .tb-btn {
+  width: var(--space-tool);
+  height: var(--space-tool);
+}
+.format-bar .tb-btn[aria-pressed='true'],
+.format-bar .style-btn[aria-expanded='true'] {
+  background: var(--c-selected);
+  color: var(--c-ink);
+}
+.format-bar button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.format-bar button:disabled:hover {
+  color: var(--c-muted);
+}
+.format-bar .glyph {
+  font-family: var(--type-writing);
+  font-size: 17px;
+  line-height: 1;
+  font-style: normal;
+  font-weight: 500;
+  text-decoration: none;
+  /* Newsreader caps sit high in a 1.0 line box: level them with the 18px icons */
+  position: relative;
+  top: 1px;
+}
+.format-bar b.glyph {
+  font-weight: 700;
+}
+.format-bar i.glyph {
+  font-style: italic;
+}
+.format-bar u.glyph {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+}
+.format-bar s.glyph {
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+.format-bar .style-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 100px;
+  height: var(--space-tool);
+  padding: 0 8px 0 10px;
+  border: 0;
+  border-radius: var(--rounded-row);
+  background: transparent;
+  color: var(--c-muted);
+  font-family: var(--type-sans);
+  font-size: var(--type-ui);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.format-bar .style-btn:hover:not(:disabled) {
+  color: var(--c-ink);
+}
+.style-menu {
+  position: fixed;
+  z-index: 40;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--c-surface);
+  border: 1px solid var(--c-hairline);
+  border-radius: var(--rounded-panel);
+  box-shadow: 0 16px 40px -24px var(--c-shadow);
+  display: flex;
+  flex-direction: column;
+}
+.style-menu.up {
+  transform: translateY(-100%);
+}
+.style-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: var(--space-target);
+  padding: 0 10px;
+  border: 0;
+  border-radius: var(--rounded-row);
+  background: transparent;
+  color: var(--c-ink);
+  text-align: left;
+  cursor: pointer;
+}
+.style-item:hover,
+.style-item:focus-visible {
+  background: var(--c-selected);
+}
+.style-check {
+  color: var(--c-muted);
+  font-family: var(--type-sans);
+  font-size: var(--type-ui);
+  font-weight: 400;
+}
+/* each name previews its style, in the writing face */
+.style-name {
+  font-family: var(--type-writing);
+  font-size: 15px;
+}
+.style-item.title .style-name {
+  font-size: 19px;
+  font-weight: 500;
+}
+.style-item.heading .style-name {
+  font-size: 17px;
+  font-weight: 500;
+}
+.style-item.subheading .style-name {
+  font-weight: 600;
+}
+/* phones: a slim row above the on-screen keyboard (EditorShell keeps it on the visual viewport's bottom) */
+.format-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 15;
+  background: var(--c-surface);
+  border-top: 1px solid var(--c-hairline);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+.format-dock.over-keyboard {
+  padding-bottom: 0;
+}
+.format-dock .format-bar {
+  height: var(--space-dock);
+  padding: 0 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+.format-dock .format-bar.fade-right {
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+.format-dock .format-bar.fade-left {
+  mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+}
+.format-dock .format-bar.fade-left.fade-right {
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+.format-dock .format-bar::-webkit-scrollbar {
+  display: none;
+}
+.format-dock .tb-btn,
+.format-dock .style-btn {
+  flex: none;
+  height: var(--space-target);
+}
+.format-dock .tb-btn {
+  width: var(--space-target);
+}
+.format-dock .style-btn {
+  min-width: 0;
+}
+@media (pointer: coarse) {
+  .style-item .key {
+    display: none;
+  }
+  .format-bar .tb-btn {
+    width: var(--space-target);
+    height: var(--space-target);
+  }
+  .format-bar .style-btn {
+    height: var(--space-target);
+  }
 }
 
 .footer {

@@ -17,5 +17,16 @@ export default defineConfig({
     { name: 'webkit', use: { ...devices['Desktop Safari'] } },
     { name: 'iphone', use: { ...devices['iPhone 13'] } },
     { name: 'pixel', use: { ...devices['Pixel 7'] } },
+    // Ctrl-key platforms (Windows / Linux) on any host: pages report Linux (e2e/fixtures.ts), so
+    // shortcut bugs that only CI's Ubuntu runners would show are caught locally too
+    {
+      name: 'linux-keys',
+      testMatch: /formatting\.spec\.ts/,
+      metadata: { linuxKeys: true },
+      use: {
+        ...devices['Desktop Chrome'],
+        userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+      },
+    },
   ],
 });

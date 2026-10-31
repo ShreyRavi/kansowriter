@@ -113,7 +113,14 @@ export function CommandPalette({
   const numField = (key: NumKey, unit = '') =>
     editing === key ? (
       <span className="val" data-local-escape onClick={(e) => e.stopPropagation()}>
-        <button type="button" className="icon-btn stepper" aria-label="Decrease" onMouseDown={keepFocus} onClick={() => step(key, -1)}>
+        <button
+          type="button"
+          className="icon-btn stepper"
+          aria-label="Decrease"
+          data-tip="Decrease"
+          onMouseDown={keepFocus}
+          onClick={() => step(key, -1)}
+        >
           −
         </button>
         <input
@@ -133,7 +140,14 @@ export function CommandPalette({
           }}
           onBlur={commitEdit}
         />
-        <button type="button" className="icon-btn stepper" aria-label="Increase" onMouseDown={keepFocus} onClick={() => step(key, 1)}>
+        <button
+          type="button"
+          className="icon-btn stepper"
+          aria-label="Increase"
+          data-tip="Increase"
+          onMouseDown={keepFocus}
+          onClick={() => step(key, 1)}
+        >
           +
         </button>
       </span>
@@ -165,7 +179,7 @@ export function CommandPalette({
             <SearchIcon />
             <Command.Input ref={inputRef} value={query} onValueChange={setQuery} placeholder="Search commands and settings" />
             {/* a real button: on phones the sheet fills the screen and has no Esc key (ISSUE-001) */}
-            <button type="button" className="close-btn" onClick={onClose}>
+            <button type="button" className="close-btn" data-tip="Close Esc" data-tip-align="end" onClick={onClose}>
               <span className="close-label">Close</span>
               <span className="key" aria-hidden="true">
                 esc

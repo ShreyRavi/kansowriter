@@ -1,7 +1,6 @@
 import { ChangeSet, Compartment, EditorState, StateEffect, StateField, Text, type ChangeSpec } from '@codemirror/state';
 import { Decoration, EditorView, WidgetType } from '@codemirror/view';
-import { commonmarkLanguage } from '@codemirror/lang-markdown';
-import { hybridMarkdown, revealSyntax } from './hybrid';
+import { hybridMarkdown, revealSyntax, writingLanguage } from './hybrid';
 import type { Run } from '../core/kop';
 import type { ReplayStep } from '../core/letter';
 
@@ -52,8 +51,8 @@ export function createReaderView(parent: HTMLElement, doc: string, label: string
       EditorView.editable.of(false),
       // positions are UTF-16 offsets into the letter's own text: a "\r" must stay one character
       EditorState.lineSeparator.of('\n'),
-      // plain CommonMark, as in the editor (R6: text only, no embedded languages)
-      commonmarkLanguage,
+      // the editor's language (R6: text only, no embedded languages)
+      writingLanguage,
       EditorView.lineWrapping,
       hybridMarkdown,
       revealC.of(revealSyntax.of(true)),
