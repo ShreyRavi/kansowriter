@@ -1,8 +1,8 @@
 import { Compartment, EditorState, Transaction, type Extension } from '@codemirror/state';
 import { EditorView, keymap, placeholder as placeholderExt } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
-import { commonmarkLanguage } from '@codemirror/lang-markdown';
-import { hybridMarkdown } from './hybrid';
+import { hybridMarkdown, writingLanguage } from './hybrid';
+import { formatKeymap } from './keys';
 import { focusMode, setFocusMode, type FocusMode } from './focus';
 import { notRecorded, recorder } from './recorder';
 import type { Change } from '../storage/writer';
@@ -15,6 +15,8 @@ export interface EditorOptions {
   focus: FocusMode;
   typewriter: boolean;
   readOnly: boolean;
+  /** every update (selection, text, read-only): drives the formatting toolbar's state */
+  onUpdate?(state: EditorState): void;
 }
 
 const readOnlyC = new Compartment();
@@ -30,6 +32,8 @@ function typewriterExt(on: boolean): Extension {
   return EditorView.updateListener.of((u) => {
     if (!u.selectionSet && !u.docChanged) return;
     if (u.transactions.some((tr) => tr.annotation(notRecorded))) return;
+    // a checklist box clicked away from the caret: the page stays where the reader is looking
+    if (u.transactions.every((tr) => tr.isUserEvent('input.check'))) return;
     const view = u.view;
     view.requestMeasure({
       key: 'typewriter', // one measure per frame, however many updates arrive
@@ -46,16 +50,18 @@ function typewriterExt(on: boolean): Extension {
 
 /**
  * CodeMirror setup: markdown, hybrid text-only decorations, focus dimming, typewriter scroll,
- * recorder. Tab is NOT bound, so Tab moves focus out of the editor to the chrome (17A).
+ * recorder, formatting shortcuts (src/editor/keys.ts). Tab is NOT bound, so Tab moves focus out of
+ * the editor to the chrome (17A).
  */
 export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView {
   const state = EditorState.create({
     doc: o.doc,
     extensions: [
       historyC.of(history()),
-      keymap.of([...defaultKeymap, ...historyKeymap]),
-      // plain CommonMark: markdown() would bundle the HTML/CSS/JS parsers for embedded code (R6: text only)
-      commonmarkLanguage,
+      // formatting first: its ⌘I / ⌘U / ⌘↵ replace the default keymap's selectParentSyntax / undoSelection / insertBlankLine
+      keymap.of([...formatKeymap, ...defaultKeymap, ...historyKeymap]),
+      // CommonMark + strikethrough + task lists, nothing embedded (R6: text only)
+      writingLanguage,
       EditorView.lineWrapping,
       hybridMarkdown,
       focusMode(o.focus),
@@ -64,6 +70,7 @@ export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView 
       placeholderExt('Start writing'),
       recorder(o.onChange),
       EditorView.domEventHandlers({ keydown: () => o.onActivity() }),
+      o.onUpdate ? EditorView.updateListener.of((u) => o.onUpdate!(u.state)) : [],
       EditorView.contentAttributes.of({ 'aria-label': 'Draft', 'aria-multiline': 'true', spellcheck: 'true', autocorrect: 'on' }),
     ],
   });
