@@ -3,9 +3,10 @@
  * sent from a preview deploy or an installed copy still opens on the live reader; dev and e2e
  * builds link to themselves.
  *
- * TODO: switch to https://writer.kansoboard.com once the custom domain is live.
+ * Letters sent before the custom domain point at https://kansowriter.vercel.app, and links never
+ * change, so that alias must stay attached to the project.
  */
-export const CANONICAL_LETTER_ORIGIN = 'https://kansowriter.vercel.app';
+export const CANONICAL_LETTER_ORIGIN = 'https://writer.kansoboard.com';
 
 export const LETTER_ORIGIN = import.meta.env.PROD ? CANONICAL_LETTER_ORIGIN : location.origin;
 

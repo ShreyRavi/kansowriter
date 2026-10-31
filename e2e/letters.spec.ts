@@ -18,7 +18,7 @@ const PRIVACY = 'Anyone with this link can read the letter. It lives in the link
 const FILE_PRIVACY = 'Anyone with this file can read the letter. It lives in the file, not on a server.';
 const DAMAGED = 'This letter didn’t arrive whole. Ask the sender to send the link again, or as a file.';
 /** production builds link to the canonical origin (D4, src/ui/letterLinks.ts) */
-const CANONICAL = 'https://kansowriter.vercel.app';
+const CANONICAL = 'https://writer.kansoboard.com';
 const isMobile = (page: Page) => page.viewportSize()!.width < 640;
 
 /** Send as letter (3A): ⌘⇧L / Ctrl ⇧L on desktop, the palette from ⋯ on phones. */
