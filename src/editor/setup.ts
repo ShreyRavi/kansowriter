@@ -2,7 +2,7 @@ import { Compartment, EditorState, Transaction, type Extension } from '@codemirr
 import { EditorView, keymap, placeholder as placeholderExt } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { hybridMarkdown, writingLanguage } from './hybrid';
-import { formatKeymap } from './keys';
+import { formatKeymap, formatShortcuts } from './keys';
 import { renumberOnEdit } from './format';
 import { focusMode, setFocusMode, type FocusMode } from './focus';
 import { notRecorded, recorder } from './recorder';
@@ -60,6 +60,7 @@ export function createEditor(parent: HTMLElement, o: EditorOptions): EditorView 
     extensions: [
       historyC.of(history()),
       // formatting first: its ⌘I / ⌘U / ⌘↵ replace the default keymap's selectParentSyntax / undoSelection / insertBlankLine
+      formatShortcuts,
       keymap.of([...formatKeymap, ...defaultKeymap, ...historyKeymap]),
       // CommonMark + strikethrough + task lists, nothing embedded (R6: text only)
       writingLanguage,

@@ -1,4 +1,5 @@
-import type { Command, KeyBinding } from '@codemirror/view';
+import { EditorView, type Command, type KeyBinding } from '@codemirror/view';
+import { Prec, type Extension } from '@codemirror/state';
 import { insertNewlineContinueMarkup } from '@codemirror/lang-markdown';
 import {
   deleteMarkerBackward,
@@ -70,8 +71,54 @@ const writable =
   (view) =>
     !view.state.readOnly && c(view);
 
+/** the key-event fields a shortcut is matched on */
+export type KeyLike = Pick<KeyboardEvent, 'key' | 'code' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey'>;
+
+/** a key's base name: the letter typed (any case), else the physical number key, else "'" */
+function baseKey(e: KeyLike): string | null {
+  if (e.key.length === 1 && /[a-z]/i.test(e.key)) return e.key.toLowerCase();
+  const num = /^(?:Digit|Numpad)(\d)$/.exec(e.code);
+  if (num) return num[1]!;
+  if (/^\d$/.test(e.key)) return e.key;
+  if (e.key === "'" || e.code === 'Quote') return "'";
+  return null;
+}
+
+/**
+ * Which formatting shortcut a key event is, matched on exact modifiers: Shift must be held for a
+ * shifted chord and must not be for an unshifted one. (CodeMirror's keymap drops Shift when it
+ * looks up a typed character, so on Linux, where Ctrl+Shift+B can arrive as key "b", Ctrl ⇧B
+ * ran Bold instead of Normal.) The other platform modifier and Alt must be up.
+ */
+export function matchShortcut(e: KeyLike, mac: boolean): FormatId | null {
+  const mod = mac ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey;
+  if (!mod || e.altKey) return null;
+  const key = baseKey(e);
+  if (!key) return null;
+  for (const [id, s] of Object.entries(SHORTCUTS) as [FormatId, Shortcut][]) {
+    const parts = ((mac && s.mac) || s.key).split('-');
+    const last = parts.pop()!.toLowerCase();
+    if (last === key && parts.includes('Shift') === e.shiftKey) return id;
+  }
+  return null;
+}
+
+const isApple = () => typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+
+/** the formatting shortcuts, ahead of every keymap (read-only views take the key and do nothing) */
+export const formatShortcuts: Extension = Prec.highest(
+  EditorView.domEventHandlers({
+    keydown(e, view) {
+      const id = matchShortcut(e, isApple());
+      if (!id) return false;
+      e.preventDefault();
+      SHORTCUTS[id].run(view);
+      return true;
+    },
+  }),
+);
+
 export const formatKeymap: KeyBinding[] = [
-  ...Object.values(SHORTCUTS).map(({ key, mac, run }) => ({ key, mac, run, preventDefault: true })),
   { key: 'Mod-Enter', run: toggleChecksCommand },
   { key: 'Enter', run: writable((v) => spec(v, endEmptyItem) || insertNewlineContinueMarkup(v)) },
   { key: 'Backspace', run: writable((v) => spec(v, deleteMarkerBackward)) },

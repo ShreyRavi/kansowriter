@@ -14,7 +14,7 @@ import {
   type InlineStyle,
   type LineStyle,
 } from './format';
-import { formatKeymap, shortcutLabel } from './keys';
+import { formatKeymap, matchShortcut, shortcutLabel, type KeyLike } from './keys';
 import { renumberOnEdit } from './format';
 
 /** "^" is a caret; "{…}" a selection (anchor at "{", head at "}"); "}…{" a backwards one */
@@ -458,5 +458,49 @@ describe('review fixes', () => {
     expect(show(step(make('# Head^'), setLineStyle(make('# Head^'), 'heading', false)))).toBe('## Head^');
     // the shortcut still toggles
     expect(line('## Head^', 'heading')).toBe('Head^');
+  });
+});
+
+describe('shortcut dispatch matches modifiers exactly', () => {
+  const ev = (key: string, code: string, mods: Partial<KeyLike> = {}): KeyLike => ({
+    key,
+    code,
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    ...mods,
+  });
+  it('off Apple: Ctrl ⇧B is Normal whatever case the key arrives in, Ctrl B is Bold', () => {
+    expect(matchShortcut(ev('b', 'KeyB', { ctrlKey: true }), false)).toBe('bold');
+    expect(matchShortcut(ev('B', 'KeyB', { ctrlKey: true, shiftKey: true }), false)).toBe('normal');
+    // Linux may report the unshifted letter with Shift held: still Normal, never Bold
+    expect(matchShortcut(ev('b', 'KeyB', { ctrlKey: true, shiftKey: true }), false)).toBe('normal');
+    expect(matchShortcut(ev('X', 'KeyX', { ctrlKey: true, shiftKey: true }), false)).toBe('strike');
+    expect(matchShortcut(ev('x', 'KeyX', { ctrlKey: true }), false)).toBeNull(); // cut stays cut
+    expect(matchShortcut(ev('G', 'KeyG', { ctrlKey: true, shiftKey: true }), false)).toBe('subheading');
+    expect(matchShortcut(ev('J', 'KeyJ', { ctrlKey: true, shiftKey: true }), false)).toBeNull();
+    expect(matchShortcut(ev('H', 'KeyH', { ctrlKey: true, shiftKey: true }), false)).toBe('heading');
+    expect(matchShortcut(ev('h', 'KeyH', { ctrlKey: true }), false)).toBeNull();
+    // shifted number keys arrive as symbols
+    expect(matchShortcut(ev('&', 'Digit7', { ctrlKey: true, shiftKey: true }), false)).toBe('numbered');
+    expect(matchShortcut(ev('*', 'Digit8', { ctrlKey: true, shiftKey: true }), false)).toBe('bullet');
+    expect(matchShortcut(ev('!', 'Digit1', { ctrlKey: true, shiftKey: true }), false)).toBe('title');
+    expect(matchShortcut(ev('7', 'Digit7', { ctrlKey: true }), false)).toBeNull();
+    expect(matchShortcut(ev("'", 'Quote', { ctrlKey: true }), false)).toBe('quote');
+    // Meta (the Windows / Super key) is not the modifier off Apple; Alt (AltGr) never matches
+    expect(matchShortcut(ev('b', 'KeyB', { metaKey: true }), false)).toBeNull();
+    expect(matchShortcut(ev('b', 'KeyB', { ctrlKey: true, altKey: true }), false)).toBeNull();
+    // shortcuts the app shell owns are not formatting
+    for (const k of ['k', 'e']) expect(matchShortcut(ev(k, `Key${k.toUpperCase()}`, { ctrlKey: true }), false)).toBeNull();
+    for (const k of ['L', 'N', 'T', 'P', 'S', 'E'])
+      expect(matchShortcut(ev(k, `Key${k}`, { ctrlKey: true, shiftKey: true }), false)).toBeNull();
+  });
+  it('on Apple: the command key is the modifier, Ctrl is not', () => {
+    expect(matchShortcut(ev('b', 'KeyB', { metaKey: true }), true)).toBe('bold');
+    expect(matchShortcut(ev('b', 'KeyB', { metaKey: true, shiftKey: true }), true)).toBe('normal');
+    expect(matchShortcut(ev('j', 'KeyJ', { metaKey: true, shiftKey: true }), true)).toBe('subheading');
+    expect(matchShortcut(ev('b', 'KeyB', { ctrlKey: true }), true)).toBeNull();
+    expect(matchShortcut(ev('i', 'KeyI', { metaKey: true, shiftKey: true }), true)).toBeNull();
   });
 });

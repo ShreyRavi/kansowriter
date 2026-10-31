@@ -1,7 +1,8 @@
 // The formatting toolbar and shortcuts: every control writes plain Markdown through a normal,
 // recorded edit (so it saves and replays in letters). Desktop: the toolbar sits in the header and
 // fades with the chrome. Phones: a row docked above the on-screen keyboard while the text has focus.
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import { expect, test } from './fixtures';
+import type { Locator, Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { decodeTestLetter, encodeTestLetter, mod, openDrafts, readerPath, runCommand, settle, startWriting, write } from './helpers';
 
@@ -112,7 +113,8 @@ test.describe('formatting toolbar', () => {
   test('numbered lists number every selected line and keep counting', async ({ page }) => {
     const editor = await startWriting(page);
     await write(page, editor, 'one\ntwo\nthree');
-    await page.keyboard.press('ControlOrMeta+a');
+    // the page's own modifier: ControlOrMeta follows the host OS, but an emulated iPhone is Apple (Meta) on a Linux host too
+    await page.keyboard.press(`${await mod(page)}+a`);
     const bar = await toolbar(page);
     await press(page, bar.getByRole('button', { name: 'Numbered list' }));
     expect(await shownText(page)).toBe('1. one\n2. two\n3. three');
