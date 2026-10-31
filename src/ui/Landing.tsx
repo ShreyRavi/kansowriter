@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from './store';
 import { importBackup } from './backupActions';
-import { LandingDemo } from './LandingDemo';
+import { HeroDemo, HowLetters } from './LandingDemo';
 import { SOURCE_URL, VERSION, VERSION_LABEL } from '../version';
 
 const LINE = 'A quiet place to write.';
@@ -45,6 +45,32 @@ function useTypedLine(): { shown: string; done: boolean } {
   return { shown: LINE.slice(0, n), done: n >= LINE.length };
 }
 
+/**
+ * "How letters work ↓" at the foot of the hero: the page reads top to bottom as one column. It
+ * fades once the visitor scrolls; under reduced motion it neither bobs nor scrolls smoothly.
+ */
+function ScrollCue() {
+  const [gone, setGone] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setGone(window.scrollY > 48);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
+  const go = () => {
+    const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById('how')?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  };
+  return (
+    <button type="button" className={`scroll-cue ui${gone ? ' gone' : ''}`} onClick={go} tabIndex={gone ? -1 : 0}>
+      How letters work
+      <svg aria-hidden="true" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.4">
+        <path d="M3 5.5l4 4 4-4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </button>
+  );
+}
+
 export function Landing({ onStart, onRestored }: { onStart(): void; onRestored(): void }) {
   const { storage, drafts } = useStore();
   const { shown, done } = useTypedLine();
@@ -77,6 +103,7 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
           <span aria-hidden="true">{shown}</span>
           <span aria-hidden="true" className="caret" style={{ opacity: caretGone ? 0 : 1 }} />
         </h1>
+        <HeroDemo />
         <button type="button" className="start" onClick={onStart}>
           Start writing
         </button>
@@ -98,8 +125,9 @@ export function Landing({ onStart, onRestored }: { onStart(): void; onRestored()
             )}
           </div>
         )}
+        <ScrollCue />
       </section>
-      <LandingDemo />
+      <HowLetters />
       <section className="points" aria-label="About Kansowriter">
         <p>The interface hides while you type.</p>
         <p>A thin line fills as you reach your daily word goal.</p>

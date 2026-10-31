@@ -237,24 +237,27 @@ main.boot .unsaved-text {
   min-height: 100vh;
 }
 .landing .hero {
+  position: relative;
   min-height: 100vh;
+  min-height: 100svh;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0;
-  padding: var(--space-gutter);
+  padding: 48px var(--space-gutter) 80px;
   text-align: center;
 }
 .landing .wordmark {
-  margin: 0 0 32px;
+  margin: 0 0 20px;
   font-size: var(--type-wordmark);
   font-weight: 500;
   color: var(--c-ink);
   letter-spacing: 0.01em;
 }
 .landing h1 {
-  margin: 0 0 56px;
+  margin: 0 0 36px;
   font-size: var(--type-landing);
   line-height: 1.4;
   font-weight: 300;
@@ -291,20 +294,71 @@ main.boot .unsaved-text {
   border-color: var(--c-accent);
 }
 .landing .restore {
-  margin-top: 24px;
+  margin-top: 16px;
+}
+.landing .scroll-cue {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--space-target);
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  color: var(--c-muted);
+  cursor: pointer;
+  transition:
+    opacity 300ms ease-out,
+    visibility 0s;
+}
+.landing .scroll-cue:hover {
+  color: var(--c-ink);
+}
+.landing .scroll-cue svg {
+  animation: cue-bob 2.4s ease-in-out infinite;
+}
+.landing .scroll-cue.gone {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  /* hidden once faded, so it also leaves the accessibility tree */
+  transition:
+    opacity 300ms ease-out,
+    visibility 0s 300ms;
+}
+@keyframes cue-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing .scroll-cue svg {
+    animation: none;
+  }
+  .landing .scroll-cue {
+    transition: none;
+  }
 }
 .landing .restore .text-btn {
   color: var(--c-muted);
 }
-/* the demo loop and "How letters work" (LandingDemo.tsx) */
+/* the demo loop in the hero, and "How letters work" below it (LandingDemo.tsx) */
 .landing .demo {
-  display: flex;
-  justify-content: center;
-  padding: 0 var(--space-gutter);
+  /* as wide as fits under the line with Start writing and the cue still above the fold */
+  width: min(100%, 880px, calc((100svh - 440px) * 1.6));
+  min-width: min(100%, 360px);
+  margin: 0 auto 24px;
+  text-align: left;
 }
 .landing .demo-figure {
   width: 100%;
-  max-width: 880px;
   margin: 0;
 }
 .landing .demo-frame {
@@ -336,8 +390,9 @@ main.boot .unsaved-text {
   width: 100%;
   max-width: 928px;
   margin: 0 auto;
-  padding: 120px var(--space-gutter) 0;
+  padding: 96px var(--space-gutter) 0;
   box-sizing: border-box;
+  scroll-margin-top: 0;
 }
 .landing .how h2 {
   margin: 0 0 48px;
