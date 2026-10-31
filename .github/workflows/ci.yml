@@ -27,7 +27,7 @@ jobs:
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run e2e
       # the shipped HTML (after Vite) must still match the CSP hash
-      - run: npm run csp:check -- dist/index.html
+      - run: npm run csp:check -- dist/web/index.html
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:

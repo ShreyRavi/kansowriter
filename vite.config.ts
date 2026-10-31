@@ -4,10 +4,17 @@ import { VitePWA } from 'vite-plugin-pwa';
 import { THEME_COLOR } from './src/ui/theme-colors';
 import { LETTER_FILE_EXTENSION, LETTER_MIME } from './src/core/letter';
 
-export default defineConfig({
+/**
+ * Two builds of one app: the web app (dist/web, deployed by Vercel) and the macOS desktop app's
+ * frontend (`--mode desktop`, embedded by Tauri from src-tauri/target/frontend). The desktop build
+ * ships its files inside the .app, so it has no service worker, no web manifest and no update notice.
+ */
+export default defineConfig(({ mode }) => ({
+  build: { outDir: mode === 'desktop' ? 'src-tauri/target/frontend' : 'dist/web' },
   plugins: [
     react(),
     VitePWA({
+      disable: mode === 'desktop',
       // R11: a new service worker waits; it activates only when the user clicks Reload (src/ui/updates.ts)
       // or when no tab is open; it never reloads a page on its own.
       registerType: 'prompt',
@@ -72,4 +79,4 @@ export default defineConfig({
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
-});
+}));

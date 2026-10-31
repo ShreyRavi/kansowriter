@@ -5,8 +5,8 @@
 //   fails_when=skipWaiting/clientsClaim are enabled, registerType becomes autoUpdate, or a reload-on-update is added;
 //   why_new=nothing exercised the update path (QA only observed it); seam=none;
 //   no_claim=a real CDN deploy (the "deploy" rewrites sw.js in a private copy of dist; Chromium only)
-// Isolation: the suite runs fullyParallel against the shared preview, so this test never touches dist/.
-// It copies dist into its own output folder and serves that with its own `vite preview` on a free port:
+// Isolation: the suite runs fullyParallel against the shared preview, so this test never touches dist/web.
+// It copies dist/web into its own output folder and serves that with its own `vite preview` on a free port:
 // a different origin, so no other test can see (or install) the changed worker.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { cpSync, readFileSync, writeFileSync } from 'node:fs';
@@ -65,7 +65,7 @@ test('a new service worker waits for every tab to close and never reloads the pa
   test.skip(!!process.env.BASE_URL, 'needs a local build: the "deploy" rewrites sw.js in a private copy of dist');
   test.setTimeout(120_000);
   const dist = testInfo.outputPath('dist');
-  cpSync('dist', dist, { recursive: true });
+  cpSync('dist/web', dist, { recursive: true });
   const { url, server } = await privatePreview(dist);
   const context = await browser.newContext({ baseURL: url });
   try {
@@ -122,7 +122,7 @@ test('a new service worker waits for every tab to close and never reloads the pa
 /** Run `body` against a private preview of a copy of dist, in a fresh context on its origin. */
 async function withPrivatePreview(browser: Browser, testInfo: TestInfo, body: (context: BrowserContext, dist: string) => Promise<void>) {
   const dist = testInfo.outputPath('dist');
-  cpSync('dist', dist, { recursive: true });
+  cpSync('dist/web', dist, { recursive: true });
   const { url, server } = await privatePreview(dist);
   const context = await browser.newContext({ baseURL: url });
   try {

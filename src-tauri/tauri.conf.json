@@ -1,0 +1,42 @@
+{
+  "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Kansowriter",
+  "version": "0.1.0",
+  "identifier": "com.kansoboard.writer",
+  "build": {
+    "beforeDevCommand": "npm run desktop:frontend:dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run desktop:frontend",
+    "frontendDist": "target/frontend"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "title": "Kansowriter",
+        "width": 1100,
+        "height": 800,
+        "minWidth": 480,
+        "minHeight": 400,
+        "center": true,
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'sha256-DsOq8zJa3829ODxE7yC6p42ZIzlibfwpYZ9SOY2J1Rc='; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' ipc: http://ipc.localhost; worker-src 'none'; manifest-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"],
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "category": "public.app-category.productivity",
+    "copyright": "Kansoboard",
+    "icon": ["icons/icon.icns", "icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "13.0"
+    }
+  }
+}

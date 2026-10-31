@@ -20,6 +20,18 @@ export type ChannelMessage =
 /** sessions still releasing their lock, so re-opening the same draft waits instead of going read-only */
 const disposing = new Map<string, Promise<void>>();
 
+/** each live session's "save everything now" (the desktop app runs these before it quits) */
+const flushers = new Set<() => Promise<boolean>>();
+
+/**
+ * Save every open draft now, as a page hide would, and wait for it. True when nothing is left
+ * unsaved. The macOS app calls this before quitting: a closing WKWebView fires no pagehide.
+ */
+export async function flushOpenDrafts(): Promise<boolean> {
+  const saved = await Promise.all([...flushers].map((f) => f().catch(() => false)));
+  return saved.every(Boolean);
+}
+
 export function channel(): BroadcastChannel | null {
   return typeof BroadcastChannel === 'undefined' ? null : new BroadcastChannel(CHANNEL);
 }
@@ -182,6 +194,14 @@ export function attachDraftSession(
   };
   document.addEventListener('visibilitychange', onHide);
   window.addEventListener('pagehide', onPageHide);
+  const flushNow = async () => {
+    const w = writer;
+    if (!w) return true;
+    if (w === clearing) return !w.dirty; // mid-clear its edits wait for the rebuilt writer
+    await w.flush(true);
+    return !w.dirty;
+  };
+  flushers.add(flushNow);
 
   /** a handover-request that arrived while clearHistory was rebuilding: answered once it is done */
   let deferredHandover = false;
@@ -256,6 +276,7 @@ export function attachDraftSession(
     clearInterval(timer);
     document.removeEventListener('visibilitychange', onHide);
     window.removeEventListener('pagehide', onPageHide);
+    flushers.delete(flushNow);
     bc?.removeEventListener('message', onMessage);
     const w = writer;
     writer = null;
