@@ -186,28 +186,33 @@ const STEPS = [
   },
 ];
 
-/** Below the hero: the demo, then three small steps (homepage only). */
-export function LandingDemo() {
+/** The demo loop in the hero, under the line (homepage only). */
+export function HeroDemo() {
   const theme = useTheme();
   return (
-    <>
-      <section className="demo" aria-label="Demo">
-        <DemoVideo theme={theme} />
-      </section>
-      <section className="how" aria-labelledby="how-title">
-        <h2 id="how-title">How letters work</h2>
-        <ol>
-          {STEPS.map((s, i) => (
-            <li key={s.title}>
-              <img src={MEDIA[theme].steps[i]} width={STEP_W} height={STEP_H} alt={s.alt} loading="lazy" decoding="async" />
-              <div>
-                <h3>{s.title}</h3>
-                <p>{s.text}</p>
-              </div>
-            </li>
-          ))}
-        </ol>
-      </section>
-    </>
+    <div className="demo">
+      <DemoVideo theme={theme} />
+    </div>
+  );
+}
+
+/** Below the hero: three small steps (homepage only). */
+export function HowLetters() {
+  const theme = useTheme();
+  return (
+    <section id="how" className="how" aria-labelledby="how-title">
+      <h2 id="how-title">How letters work</h2>
+      <ol>
+        {STEPS.map((s, i) => (
+          <li key={s.title}>
+            <img src={MEDIA[theme].steps[i]} width={STEP_W} height={STEP_H} alt={s.alt} loading="lazy" decoding="async" />
+            <div>
+              <h3>{s.title}</h3>
+              <p>{s.text}</p>
+            </div>
+          </li>
+        ))}
+      </ol>
+    </section>
   );
 }

@@ -84,6 +84,25 @@ test.describe('homepage demo', () => {
     await page.close();
   });
 
+  test('the demo sits in the hero under the line, with a cue down to How letters work', async ({ page }) => {
+    await freshStart(page);
+    await page.goto('/about');
+    const vh = await page.evaluate(() => window.innerHeight);
+    const box = async (sel: string) => (await page.locator(sel).first().boundingBox())!;
+    // line, then the demo, then Start writing, all in the first screen with the cue
+    const h1 = await box('.landing h1');
+    const demo = await box('.landing .hero .demo-frame');
+    const start = await box('.landing .start');
+    expect(demo.y).toBeGreaterThan(h1.y + h1.height - 1);
+    expect(start.y).toBeGreaterThan(demo.y + demo.height);
+    const cue = page.getByRole('button', { name: 'How letters work' });
+    await expect(cue).toBeVisible();
+    expect((await cue.boundingBox())!.y + (await cue.boundingBox())!.height).toBeLessThanOrEqual(vh);
+    await cue.click();
+    await expect(page.locator('.scroll-cue.gone')).toBeAttached();
+    await expect.poll(async () => (await page.locator('#how').boundingBox())!.y).toBeLessThan(vh / 2);
+  });
+
   test('How letters work: three steps, no horizontal overflow, axe passes', async ({ page }) => {
     await homepage(page);
     const how = page.getByRole('region', { name: 'How letters work' });
@@ -93,6 +112,8 @@ test.describe('homepage demo', () => {
     for (const img of await how.locator('img').all()) await expect(img).toHaveAttribute('alt', /.+/);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    // scrolled down, the hero's cue has faded out (mid-fade its text is deliberately faint)
+    await expect(page.locator('.scroll-cue')).toBeHidden();
     expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   });
 
