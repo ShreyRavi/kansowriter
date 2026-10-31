@@ -339,8 +339,35 @@ export function CommandPalette({
                 kbd={`${mod()}⇧E`}
                 onSelect={() => run('txt', 'Saving…', actions.exportText)}
               />
+              <Item
+                label="Save as Kansowriter file (.kanso)"
+                value={labels.kanso || ''}
+                onSelect={() => run('kanso', 'Saving…', actions.exportKanso)}
+              />
+              {actions.saveToFile && (
+                <Item
+                  label="Save to file…"
+                  value={labels.file || '.md'}
+                  kbd={`⌥${mod()}S`}
+                  onSelect={() => run('file', 'Saving…', actions.saveToFile!)}
+                />
+              )}
               <Item label="Export all drafts" value={labels.all || ''} onSelect={() => run('all', 'Saving…', actions.exportAll)} />
-              <Item label="Import backup" value={labels.imp || ''} onSelect={() => run('imp', 'Reading…', actions.importBackup)} />
+              <Command.Item
+                value="Import backup"
+                keywords={['restore', 'draft', 'open']}
+                onSelect={() => run('imp', 'Reading…', actions.importBackup)}
+              >
+                <span>Import backup</span>
+                <Val value={labels.imp || ''} />
+              </Command.Item>
+              {actions.makeDefault && (
+                <Item
+                  label="Make Kansowriter the default for .md"
+                  value={labels.def || ''}
+                  onSelect={() => run('def', 'Asking…', actions.makeDefault!)}
+                />
+              )}
               {confirm === 'clear' ? (
                 <Confirm
                   text={`Clear history of “${title || 'Untitled'}”? The text stays.`}

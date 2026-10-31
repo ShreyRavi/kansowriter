@@ -9,7 +9,14 @@ export interface PaletteActions {
   exportMarkdown(): Promise<string>;
   exportText(): Promise<string>;
   exportAll(): Promise<string>;
+  /** a .kansobackup or a .kanso (which then opens its draft) */
   importBackup(): Promise<string | null>;
+  /** the draft with its whole history as a .kanso (download on the web, save panel on macOS); null when cancelled */
+  exportKanso(): Promise<string | null>;
+  /** macOS only: link the draft to a Markdown file (File > Save to File…); null when cancelled */
+  saveToFile?(): Promise<string | null>;
+  /** macOS only: make Kansowriter the default app for .md */
+  makeDefault?(): Promise<string>;
   clearHistory(): Promise<string>;
   /** resolves to an error label when the draft could not be deleted */
   deleteDraft(): Promise<string | null>;

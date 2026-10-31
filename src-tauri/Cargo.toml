@@ -10,12 +10,17 @@ tauri-build = { version = "=2.7.3", features = [] }
 
 [dependencies]
 tauri = { version = "=2.12.4", features = [] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# File > Open… and the save panels (sheets on the window); no JS dialog plugin, nothing the page can call
+rfd = { version = "0.16", default-features = false }
 # already in the tree through tauri: route every quit through the save-first path (src/terminate.rs);
-# NSEvent/NSWindow/NSString are for the debug-only probe (src/probe.rs), unused code LTO drops
+# NSEvent/NSWindow are for the debug-only probe (src/probe.rs), unused code LTO drops; NSString/NSArray
+# carry LaunchServices strings, NSWorkspace/NSURL/NSError/NSBundle and block2 set the default app (src/default_app.rs)
+block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSEvent", "NSWindow", "NSGraphicsContext"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSGeometry", "NSProcessInfo"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSEvent", "NSWindow", "NSGraphicsContext", "NSWorkspace", "block2"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray", "NSGeometry", "NSProcessInfo", "NSURL", "NSError", "NSBundle"] }
 
 [profile.release]
 lto = true

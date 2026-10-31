@@ -68,6 +68,7 @@ space:
   tool: 32px
   dock: 48px
   checkBox: 0.78em
+  trafficLights: 84px
 motion:
   chromeFadeDelay: 3000ms
   chromeFade: 200ms
@@ -106,6 +107,8 @@ The visual source is the Calm Writer design canvas (renamed Kansowriter). `src/u
 | Sidebar row | title 17px Newsreader 500, when 12px, 2-line excerpt 13px, words 12px; selected row background |
 | Search field | 40px, magnifier icon, clear ✕ when filled, hidden label |
 | Reader | 680px column, hidden controls row (play/pause, scrubber, Skip to the end), date line top-left, 2px replay line, end-state link 48px below the text after 1.5 s (`endLinkFade`, none under reduced motion); empty state: "Open a letter file" 17px Newsreader (`openFile`) with a drop zone; reduced motion keeps the replay (static caret, no animated chrome) |
+| Window (macOS app) | no title bar: the traffic lights sit in the header (Tauri `titleBarStyle: Overlay`, `trafficLightPosition` 20, 44 in `src-tauri/tauri.conf.json`), vertically centred on its 44px buttons, 20px from the left edge like the sidebar's text; the header reserves `trafficLights` (84px) on the left so ☰ starts a calm gap after them, and the sidebar's top row starts its "Drafts" label 12px past that (text has no button inset), its row centred on the lights. The lights stay visible while the chrome fades (native behaviour; the reserved zone never moves, so nothing shifts under them) and AppKit hides them in full screen, where the reserve drops back to the 24px gutter. The header is the title bar: drag it from any empty spot, double-click zooms; buttons stay buttons. The window is at least 640px wide, so the phone header never meets the lights |
+| Linked file (macOS app) | a draft linked to a Markdown file shows the path (`~/…`) as the title's tooltip and a 12px muted file glyph before its title in the sidebar; nothing else changes. File problems use the notice strip, below every saving notice: "This file changed outside Kansowriter." Use the file’s version · Keep mine; "The linked file was moved or deleted. Your draft is safe here." Save to file… |
 | Send panel | 620px bottom panel 24px above the edge (phone: sheet, `rounded.sheet` top corners, max 60vh), live preview above, Replay / Final text only, start slider, size note, privacy line, primary Copy link / Download letter file |
 
 ## Formatting

@@ -375,6 +375,11 @@ main.boot .unsaved-text {
   text-overflow: ellipsis;
   max-width: 40vw;
 }
+/* a linked file's path is the title's tooltip; the wrapper keeps the tip outside the title's clipping */
+.header .title-wrap {
+  display: flex;
+  min-width: 0;
+}
 .header .palette-btn {
   width: auto;
   padding: 0 12px;
@@ -821,6 +826,11 @@ main.boot .unsaved-text {
   row-gap: 4px;
   animation: notice-in 200ms ease-out;
 }
+.notice .actions {
+  display: flex;
+  flex-wrap: wrap;
+  column-gap: 16px;
+}
 @keyframes notice-in {
   from {
     transform: translateY(100%);
@@ -931,6 +941,13 @@ main.boot .unsaved-text {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* macOS: linked to a Markdown file */
+.draft-row .t .linked {
+  display: inline-flex;
+  margin-right: 6px;
+  color: var(--c-muted);
+  vertical-align: 1px;
 }
 .draft-row .t mark {
   background: none;
@@ -1466,6 +1483,34 @@ main.boot .unsaved-text {
 .primary-btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* ---------- macOS app window (DESIGN.md: Window) ----------
+ * No title bar: the traffic lights are drawn over the header's left end. The header keeps room
+ * for them at all times (they stay while the chrome fades), except in full screen, where AppKit
+ * hides them. The header is the drag region (data-tauri-drag-region), so its text isn't selectable. */
+:root[data-desktop] .header {
+  padding-left: var(--space-traffic-lights);
+  -webkit-user-select: none;
+  user-select: none;
+}
+:root[data-desktop] .sidebar .top {
+  padding: 20px 12px 8px calc(var(--space-traffic-lights) + 12px);
+}
+/* the landing page and the reader have no header: a strip where the title bar would be */
+.window-drag {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 28px;
+  z-index: 5;
+}
+:root[data-desktop][data-fullscreen] .header {
+  padding-left: var(--space-gutter);
+}
+:root[data-desktop][data-fullscreen] .sidebar .top {
+  padding: 16px 12px 8px 20px;
 }
 
 /* ---------- responsive (16A) ---------- */

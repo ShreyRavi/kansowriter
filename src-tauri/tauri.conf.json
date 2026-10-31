@@ -17,10 +17,13 @@
         "title": "Kansowriter",
         "width": 1100,
         "height": 800,
-        "minWidth": 480,
+        "minWidth": 640,
         "minHeight": 400,
         "center": true,
-        "dragDropEnabled": false
+        "dragDropEnabled": false,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": { "x": 20, "y": 44 }
       }
     ],
     "security": {
@@ -37,6 +40,27 @@
     "icon": ["icons/icon.icns", "icons/icon.png"],
     "macOS": {
       "minimumSystemVersion": "13.0"
-    }
+    },
+    "fileAssociations": [
+      {
+        "ext": ["md", "markdown"],
+        "name": "Markdown document",
+        "role": "Editor",
+        "rank": "Alternate",
+        "contentTypes": ["net.daringfireball.markdown"]
+      },
+      {
+        "ext": ["kanso"],
+        "name": "Kansowriter draft",
+        "role": "Editor",
+        "rank": "Owner",
+        "contentTypes": ["com.kansoboard.writer.kanso"],
+        "mimeType": "application/x-kanso",
+        "exportedType": {
+          "identifier": "com.kansoboard.writer.kanso",
+          "conformsTo": ["public.data", "public.content"]
+        }
+      }
+    ]
   }
 }

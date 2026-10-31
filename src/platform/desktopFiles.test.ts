@@ -1,0 +1,292 @@
+// @vitest-environment jsdom
+import 'fake-indexeddb/auto';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { encodeKanso } from '../core/backup';
+import { dayKey } from '../core/words';
+import { IndexedDbAdapter } from '../storage/idb';
+import type { EditorPort, HostPort } from '../ui/desktopBridge';
+import { createDesktopFiles, DESKTOP_KEY, LINKS_KEY, MD_PROMPT_DELAY_MS, type Invoke } from './desktopFiles';
+import type { FileLink, FileOps, FileStat } from './fileSync';
+
+// jsdom's Blob has no stream(), which the .kanso codec (CompressionStream) needs: use Node's
+globalThis.Blob = (await import('node:buffer')).Blob as unknown as typeof Blob;
+
+const enc = (s: string) => new TextEncoder().encode(s);
+const dec = (b: Uint8Array) => new TextDecoder().decode(b);
+
+let n = 0;
+let storage: IndexedDbAdapter;
+let disk: Map<string, { bytes: Uint8Array; mtime: number }>;
+let clock: number;
+let opened: string[];
+let savePath: string | null;
+let defaultFails: boolean;
+let defaultCalls: boolean[];
+let notices: string[];
+let host: HostPort & { open: ReturnType<typeof vi.fn<(id: string) => void>> };
+
+const ops: FileOps = {
+  stat: async (p) => {
+    const f = disk.get(p);
+    return f ? ({ mtime: f.mtime, size: f.bytes.length } satisfies FileStat) : null;
+  },
+  read: async (p) => {
+    const f = disk.get(p);
+    if (!f) throw new Error('not-found');
+    return f.bytes;
+  },
+  write: async (p, bytes) => {
+    disk.set(p, { bytes, mtime: ++clock });
+    return { mtime: clock, size: bytes.length };
+  },
+};
+
+const invoke = (async (cmd: string, args?: Record<string, unknown>) => {
+  if (cmd === 'take_opened') return opened.splice(0);
+  if (cmd === 'pick_save_path') return savePath ? `${savePath}/${String(args?.name)}.${String(args?.kind)}` : null;
+  if (cmd === 'set_default_md') {
+    defaultCalls.push(args?.mine as boolean);
+    if (defaultFails) throw new Error('-54');
+    return ['net.daringfireball.markdown'];
+  }
+  throw new Error(`unexpected ${cmd}`);
+}) as Invoke;
+
+const make = () => createDesktopFiles(ops, invoke, (text) => void notices.push(text));
+
+beforeEach(() => {
+  storage = new IndexedDbAdapter(`desktop-files-${n++}`);
+  disk = new Map();
+  clock = 1000;
+  opened = [];
+  savePath = '/Users/a/Documents';
+  defaultFails = false;
+  defaultCalls = [];
+  notices = [];
+  host = { storage, open: vi.fn<(id: string) => void>(), refreshDrafts: vi.fn(async () => []), broadcast: vi.fn() };
+  document.body.innerHTML = '';
+});
+afterEach(() => vi.useRealTimers());
+
+const settle = () => new Promise((r) => setTimeout(r, 20));
+/** under fake timers: let IndexedDB (real macrotasks) and the timers move along together */
+async function pass(ms: number) {
+  for (let t = 0; t < ms; t += 100) {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(100);
+  }
+}
+const links = async () => (await storage.getSetting<Record<string, FileLink | null>>(LINKS_KEY)) ?? {};
+
+function port(draftId: string, text: string): EditorPort & { text(): string; set(t: string): void } {
+  let t = text;
+  return {
+    draftId,
+    text: () => t,
+    set: (x: string) => void (t = x),
+    writable: () => true,
+    replaceText: (x) => ((t = x), true),
+    fileNotice: () => {},
+    exportKanso: async () => 'Saved Draft.kanso',
+  };
+}
+
+describe('opening Markdown files (Finder, Dock, open -a, File > Open…)', () => {
+  it('a file handed over at launch waits for the page, then becomes a linked draft holding its text', async () => {
+    disk.set('/Users/a/notes.md', { bytes: enc('# Notes\r\n\r\nFirst line\r\n'), mtime: 5 });
+    opened.push('/Users/a/notes.md');
+    const files = make();
+    void files.opened(); // Rust's nudge can come before the Router is up
+    files.attachHost(host);
+    await settle();
+    expect(host.open).toHaveBeenCalledOnce();
+    const id = host.open.mock.calls[0]![0] as string;
+    const loaded = await storage.loadDraft(id);
+    expect(loaded?.text).toBe('# Notes\n\nFirst line');
+    expect(loaded?.record.meta.title).toBe('Notes');
+    // the text is the first recorded op (replay shows it), and opening isn't writing: no words today
+    expect(await storage.loadOps(id)).toEqual([[0, 0, '# Notes\n\nFirst line']]);
+    const now = Date.now();
+    expect((await storage.getDay(dayKey(now, new Date(now).getTimezoneOffset())))?.B ?? 0).toBe(0);
+    expect((await links())[id]).toMatchObject({ path: '/Users/a/notes.md', eol: '\r\n', finalNewline: true, mtime: 5 });
+    expect(files.linkedPath(id)).toBe('/Users/a/notes.md');
+  });
+
+  it('opening a file already linked opens its draft instead of making another', async () => {
+    disk.set('/Users/a/notes.md', { bytes: enc('Hi\n'), mtime: 5 });
+    const files = make();
+    files.attachHost(host);
+    opened.push('/Users/a/notes.md');
+    await files.opened();
+    opened.push('/Users/a/notes.md');
+    await files.opened();
+    expect(await storage.listDrafts()).toHaveLength(1);
+    expect(host.open).toHaveBeenCalledTimes(2);
+    expect(host.open.mock.calls[0]![0]).toBe(host.open.mock.calls[1]![0]);
+  });
+
+  it('an empty file is named after the file; an unreadable or binary one says so calmly', async () => {
+    disk.set('/Users/a/Ideas.md', { bytes: enc(''), mtime: 5 });
+    disk.set('/Users/a/photo.md', { bytes: new Uint8Array([0xff, 0xd8, 0xff]), mtime: 5 });
+    const files = make();
+    files.attachHost(host);
+    opened.push('/Users/a/Ideas.md', '/Users/a/photo.md', '/Users/a/gone.md');
+    await files.opened();
+    const [d] = await storage.listDrafts();
+    expect(d?.meta.title).toBe('Ideas');
+    expect(notices).toEqual(['“photo.md” isn’t a text file.', 'Couldn’t open “gone.md”.']);
+  });
+});
+
+describe('.kanso files', () => {
+  it('opens a draft with its history; the same file again opens the existing draft; a changed one comes in as a copy', async () => {
+    const other = new IndexedDbAdapter(`desktop-files-src-${n++}`);
+    const rec = { ...(await import('../core/draft')).newDraft('k', 1) };
+    await other.createDraft(rec);
+    await other.append({
+      draftId: 'k',
+      baseHead: 0,
+      baseEpoch: rec.epoch,
+      ops: [[0, 0, 'Letter']],
+      newSession: { opIndex: 0, at: 1, tzOffset: 0 },
+      meta: { title: 'Letter', excerpt: '', words: 1 },
+      updatedAt: 1,
+      dayDeltas: [],
+      snapshots: [],
+    });
+    disk.set('/Users/a/Letter.kanso', { bytes: await encodeKanso((await other.exportDraft('k'))!), mtime: 5 });
+    const files = make();
+    files.attachHost(host);
+    opened.push('/Users/a/Letter.kanso');
+    await files.opened();
+    expect(host.open).toHaveBeenLastCalledWith('k');
+    expect(await storage.loadOps('k')).toEqual([[0, 0, 'Letter']]);
+    opened.push('/Users/a/Letter.kanso');
+    await files.opened();
+    expect(await storage.listDrafts()).toHaveLength(1);
+    // the local draft moves on differently: the file's history no longer fits it
+    await storage.clearHistory('k', 'Rewritten', 2, 1, (await storage.getRecord('k'))!.epoch);
+    opened.push('/Users/a/Letter.kanso');
+    await files.opened();
+    expect(await storage.listDrafts()).toHaveLength(2);
+    expect(notices.at(-1)).toMatch(/^Opened as a copy/);
+  });
+
+  it('a file that isn’t a .kanso is refused with the codec’s message', async () => {
+    disk.set('/Users/a/bad.kanso', { bytes: enc('nope'), mtime: 5 });
+    const files = make();
+    files.attachHost(host);
+    opened.push('/Users/a/bad.kanso');
+    await files.opened();
+    expect(notices).toEqual(['That file isn’t a Kansowriter draft.']);
+    expect(await storage.listDrafts()).toHaveLength(0);
+  });
+});
+
+describe('Save to File…, the editor link and quitting', () => {
+  it('links the draft to a new file (one file, one draft), writes it with a final newline, and edits follow', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const files = make();
+    files.attachHost(host);
+    const p = port('d1', '# Plan\n\nSteps');
+    const link = files.attachEditor(p);
+    const label = await files.saveToFile('d1');
+    expect(label).toBe('Saved to Plan.md');
+    expect(dec(disk.get('/Users/a/Documents/Plan.md')!.bytes)).toBe('# Plan\n\nSteps\n');
+    expect(files.linkedPath('d1')).toBe('/Users/a/Documents/Plan.md');
+    p.set('# Plan\n\nSteps, more');
+    link.changed();
+    // quitting right after typing: the flusher writes it at once
+    await files.flush();
+    expect(dec(disk.get('/Users/a/Documents/Plan.md')!.bytes)).toBe('# Plan\n\nSteps, more\n');
+    // another draft saved to the same path takes the link over
+    files.attachEditor(port('d2', '# Plan'));
+    await files.saveToFile('d2');
+    expect(files.linkedPath('d1')).toBeNull();
+    expect(files.linkedPath('d2')).toBe('/Users/a/Documents/Plan.md');
+    expect((await links()).d1).toBeNull();
+  });
+
+  it('a cancelled save panel changes nothing', async () => {
+    savePath = null;
+    const files = make();
+    files.attachHost(host);
+    files.attachEditor(port('d1', 'x'));
+    expect(await files.saveToFile('d1')).toBeNull();
+    expect(files.linkedPath('d1')).toBeNull();
+  });
+
+  it('closing a linked draft still writes its last words, and a quit right after waits for them', async () => {
+    const files = make();
+    files.attachHost(host);
+    const p = port('d1', 'One');
+    const link = files.attachEditor(p);
+    await files.saveToFile('d1');
+    p.set('One two');
+    link.changed();
+    link.dispose();
+    await files.flush();
+    expect(dec(disk.get('/Users/a/Documents/One.md')!.bytes)).toBe('One two\n');
+  });
+
+  it('the File menu runs the saves for the open draft', async () => {
+    const files = make();
+    files.attachHost(host);
+    files.attachEditor(port('d1', 'Menu'));
+    await files.menu('save-file');
+    await files.menu('save-kanso');
+    expect(notices).toEqual(['Saved to Menu.md.', 'Saved Draft.kanso.']);
+  });
+});
+
+describe('the Markdown question', () => {
+  it('asks once, quietly, after a pause; Yes sets the default and says how it went', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const asks: { text: string; actions?: { label: string; run(): void }[] }[] = [];
+    const files = createDesktopFiles(ops, invoke, (text, actions) => void asks.push({ text, actions }));
+    files.attachHost(host);
+    await pass(MD_PROMPT_DELAY_MS + 200);
+    expect(asks.map((a) => a.text)).toEqual(['Open Markdown files with Kansowriter?']);
+    expect(asks[0]!.actions!.map((a) => a.label)).toEqual(['Yes', 'Not now']);
+    asks[0]!.actions![0]!.run();
+    await pass(200);
+    expect(asks.at(-1)?.text).toBe('Markdown files now open in Kansowriter.');
+    expect(defaultCalls).toEqual([true]);
+    expect(await storage.getSetting(DESKTOP_KEY)).toEqual({ mdAsked: true });
+    // the next launch doesn't ask again
+    const again: string[] = [];
+    createDesktopFiles(ops, invoke, (t) => void again.push(t)).attachHost(host);
+    await pass(MD_PROMPT_DELAY_MS * 3);
+    expect(again).toEqual([]);
+  });
+
+  it('waits while another notice is showing', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const busy = document.createElement('div');
+    busy.className = 'notice';
+    document.body.append(busy);
+    const asks: string[] = [];
+    createDesktopFiles(ops, invoke, (t) => void asks.push(t)).attachHost(host);
+    await pass(MD_PROMPT_DELAY_MS * 3);
+    expect(asks).toEqual([]);
+    busy.remove();
+    await pass(MD_PROMPT_DELAY_MS + 200);
+    expect(asks).toEqual(['Open Markdown files with Kansowriter?']);
+  });
+
+  it('Not now quietly gives back a default macOS handed over on its own', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const asks: { text: string; actions?: { label: string; run(): void }[] }[] = [];
+    createDesktopFiles(ops, invoke, (text, actions) => void asks.push({ text, actions })).attachHost(host);
+    await pass(MD_PROMPT_DELAY_MS + 200);
+    asks[0]!.actions![1]!.run();
+    await pass(200);
+    expect(defaultCalls).toEqual([false]);
+    expect(asks).toHaveLength(1);
+  });
+
+  it('a refusal from LaunchServices is reported, not thrown', async () => {
+    defaultFails = true;
+    expect(await make().makeDefault()).toBe('Couldn’t change the default app for Markdown');
+  });
+});
